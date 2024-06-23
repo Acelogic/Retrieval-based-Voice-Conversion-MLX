@@ -1,5 +1,7 @@
 # RVC to MLX Conversion Project
 
+![image](https://github.com/Acelogic/Retrieval-based-Voice-Conversion-MLX/assets/7362641/3bf57324-60a2-483e-a0a3-7486af6aa556)
+
 ## Overview
 
 This project aims to convert the Retrieval-based Voice Conversion (RVC) model from PyTorch to Apple's MLX framework. RVC is a state-of-the-art voice conversion system, and by porting it to MLX, we can leverage the performance benefits of Apple Silicon hardware.
