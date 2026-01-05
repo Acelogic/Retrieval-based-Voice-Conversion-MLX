@@ -444,48 +444,109 @@ class RMVPE0Predictor:
         self.cents_mapping = 20 * np.arange(N_CLASS) + 1997.3794084376191
         self.cents_mapping = np.pad(self.cents_mapping, (4, 4))
 
-    def mel_spectrogram(self, audio):
-        # audio: numpy array (T,) at 16k
-        # Use Librosa to match PyTorch MelSpectrogram settings
-        # n_fft=1024, hop_length=160, win_length=1024, n_mels=128, fmin=30, fmax=8000
-        # center=True
+    def _create_mel_filterbank(self, n_fft, n_mels, sr, fmin, fmax):
+        """Create mel filterbank matrix (computed once, cached)."""
+        # Convert Hz to Mel
+        def hz_to_mel(hz):
+            return 2595 * np.log10(1 + hz / 700)
         
-        mel = librosa.feature.melspectrogram(
-            y=audio,
-            sr=16000,
-            n_fft=1024,
-            hop_length=160,
-            win_length=1024,
-            n_mels=128,
-            fmin=30,
-            fmax=8000,
-            center=True,
-            power=2.0 # Magnitude squared? PyTorch MelSpectrogram usually uses Magnitude only?? 
-            # Wait. PyTorch implementation in RMVPE.py line 408:
-            # magnitude = torch.sqrt(fft.real.pow(2) + fft.imag.pow(2))
-            # mel_output = torch.matmul(self.mel_basis, magnitude)
-            # log_mel_spec = torch.log(torch.clamp(mel_output, min=self.clamp))
+        def mel_to_hz(mel):
+            return 700 * (10 ** (mel / 2595) - 1)
+        
+        # Create mel points
+        mel_min = hz_to_mel(fmin)
+        mel_max = hz_to_mel(fmax)
+        mel_points = np.linspace(mel_min, mel_max, n_mels + 2)
+        hz_points = mel_to_hz(mel_points)
+        
+        # FFT bin frequencies
+        freq_bins = np.fft.rfftfreq(n_fft, 1.0/sr)
+        
+        # Create filterbank
+        filterbank = np.zeros((n_mels, len(freq_bins)))
+        
+        for i in range(n_mels):
+            left = hz_points[i]
+            center = hz_points[i + 1]
+            right = hz_points[i + 2]
             
-            # So: FFT -> Magnitude (NOT Squared) -> Mel Basis -> Log.
-            # librosa.feature.melspectrogram returns POWER spectrogram (Magnitude^2) by default (power=2.0).
-            # We want POWER=1.0 (Magnitude).
-        )
-        # Re-compute with power=1.0
-        mel = librosa.feature.melspectrogram(
-            y=audio,
-            sr=16000,
-            n_fft=1024,
-            hop_length=160,
-            win_length=1024,
-            n_mels=128,
-            fmin=30,
-            fmax=8000,
-            center=True,
-            power=1.0 # Magnitude
-        )
+            # Left slope
+            left_mask = (freq_bins >= left) & (freq_bins <= center)
+            filterbank[i, left_mask] = (freq_bins[left_mask] - left) / (center - left + 1e-10)
+            
+            # Right slope
+            right_mask = (freq_bins >= center) & (freq_bins <= right)
+            filterbank[i, right_mask] = (right - freq_bins[right_mask]) / (right - center + 1e-10)
         
-        log_mel = np.log(np.maximum(mel, 1e-5))
-        return log_mel
+        return mx.array(filterbank.astype(np.float32))
+    
+    def _create_window(self, win_length):
+        """Create Hann window."""
+        n = np.arange(win_length)
+        window = 0.5 - 0.5 * np.cos(2 * np.pi * n / win_length)
+        return mx.array(window.astype(np.float32))
+    
+    def mel_spectrogram(self, audio):
+        """GPU-accelerated mel spectrogram using MLX FFT.
+        
+        Args:
+            audio: numpy array (T,) at 16kHz
+            
+        Returns:
+            log_mel: numpy array (n_mels, num_frames)
+        """
+        # Parameters matching RMVPE
+        n_fft = 1024
+        hop_length = 160
+        win_length = 1024
+        n_mels = 128
+        sr = 16000
+        fmin = 30
+        fmax = 8000
+        
+        # Create/cache mel filterbank and window
+        if not hasattr(self, '_mel_filterbank'):
+            self._mel_filterbank = self._create_mel_filterbank(n_fft, n_mels, sr, fmin, fmax)
+        if not hasattr(self, '_window'):
+            self._window = self._create_window(win_length)
+        
+        # Pad audio for center=True (reflect padding)
+        pad_len = n_fft // 2
+        audio_padded = np.pad(audio, (pad_len, pad_len), mode='reflect')
+        
+        # Convert to MLX
+        audio_mx = mx.array(audio_padded.astype(np.float32))
+        
+        # Compute STFT frames
+        # Number of frames
+        num_frames = 1 + (len(audio_padded) - n_fft) // hop_length
+        
+        # Extract frames using strided view (vectorized)
+        # Create frame indices
+        frame_starts = np.arange(num_frames) * hop_length
+        frame_indices = frame_starts[:, None] + np.arange(n_fft)
+        
+        # Gather frames
+        frames = audio_mx[frame_indices]  # (num_frames, n_fft)
+        
+        # Apply window
+        frames = frames * self._window
+        
+        # FFT
+        spectrum = mx.fft.rfft(frames, axis=-1)  # (num_frames, n_fft//2 + 1)
+        
+        # Magnitude (not power)
+        magnitude = mx.abs(spectrum)  # (num_frames, n_fft//2 + 1)
+        
+        # Apply mel filterbank: (n_mels, n_fft//2+1) @ (n_fft//2+1, num_frames) = (n_mels, num_frames)
+        mel = self._mel_filterbank @ magnitude.T  # (n_mels, num_frames)
+        
+        # Log scale with floor
+        log_mel = mx.log(mx.maximum(mel, 1e-5))
+        
+        # Force evaluation and convert to numpy
+        mx.eval(log_mel)
+        return np.array(log_mel)
 
     def mel2hidden(self, mel, chunk_size=32000):
         # mel: (n_mels, T)

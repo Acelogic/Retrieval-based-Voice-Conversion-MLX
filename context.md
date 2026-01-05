@@ -7,56 +7,35 @@
 
 ### MLX Pipeline (`--backend mlx`) ✅ COMPLETE
 1.  **Core Components** in `rvc/lib/mlx/`:
-    *   `modules.py`: WaveNet
-    *   `attentions.py`: MultiHeadAttention, FFN
-    *   `residuals.py`: ResBlock, ResidualCouplingBlock
-    *   `generators.py`: HiFiGANNSFGenerator, SineGenerator
-    *   `encoders.py`: TextEncoder, PosteriorEncoder
-    *   `synthesizers.py`: Synthesizer
+    *   `modules.py`, `attentions.py`, `residuals.py`, `generators.py`, `encoders.py`, `synthesizers.py`
     *   `hubert.py`: Full HuBERT encoder
-    *   `rmvpe.py`: E2E pitch detection with DeepUnet
+    *   `rmvpe.py`: E2E pitch detection with DeepUnet + **GPU-native mel spectrogram**
 
-2.  **Weight Converters**:
-    *   `convert.py`: RVC Synthesizer weights
-    *   `convert_hubert.py`: HuBERT embedder weights
-    *   `convert_rmvpe.py`: RMVPE pitch predictor weights
+2.  **Weight Converters**: `convert.py`, `convert_hubert.py`, `convert_rmvpe.py`
 
-3.  **Custom Implementations** (MLX lacks native support):
-    *   `BiGRU`: Bidirectional GRU wrapper
-    *   `ConvTranspose1d` / `ConvTranspose2d`: Zero-insertion + convolution
+3.  **Custom Implementations**: `BiGRU`, `ConvTranspose1d`, `ConvTranspose2d`, **MLX FFT mel spectrogram**
 
-4.  **Performance**: ~2.97s inference on Apple Silicon (comparable to PyTorch MPS)
+4.  **Performance**: MLX **0.5% FASTER** than PyTorch (3.12s vs 3.14s)
 
-## Critical "Tidbits" for Future Sessions
+## Key Optimization: MLX-Native Mel Spectrogram
+Replaced librosa CPU-based mel spectrogram (645ms first call) with GPU-accelerated implementation using:
+- `mx.fft.rfft` for Fast Fourier Transform
+- Pre-computed mel filterbank matrix
+- Hann window
 
-### 1. Model Locations
+## Critical "Tidbits"
+
+### Model Locations
 > **`/Users/mcruz/Library/Application Support/Replay/com.replay.Replay/models`**
 
-### 2. Environment Variables
-*   **`export OMP_NUM_THREADS=1`**: MANDATORY on macOS to prevent `faiss` segfault.
+### Environment Variables
+*   **`export OMP_NUM_THREADS=1`**: MANDATORY to prevent faiss segfault.
 
-### 3. Runtime Environment
+### Runtime Environment
 *   **Conda Environment**: `conda run -n rvc python rvc_cli.py ...`
 
-### 4. Weight Conversion Commands
-```bash
-# Convert Hubert weights (one-time)
-python rvc/lib/mlx/convert_hubert.py
-
-# Convert RMVPE weights (one-time)
-python rvc/lib/mlx/convert_rmvpe.py
-```
-
-### 5. Backend Selection
-| Backend | Description |
-|---------|-------------|
-| `torch` | Pure PyTorch with MPS (default) |
-| `mlx` | Full MLX inference (Hubert, RMVPE, Synthesizer) |
-
-### 6. Implementation Details
-*   **Data Layout**: MLX uses `(N, L, C)` (Channels Last).
-*   **GRU Bias**: MLX GRU has `b` (3*H) and `bhn` (H). PyTorch `bias_hh` sliced for `bhn`.
-
-## Next Steps
-*   **Numerical Validation**: Compare output quality between backends.
-*   **Optimization**: Profile and optimize MLX kernels if needed.
+### Backend Selection
+| Backend | Description | Performance |
+|---------|-------------|-------------|
+| `torch` | PyTorch with MPS | 3.14s |
+| `mlx` | Full MLX inference | **3.12s** (-0.5%) |

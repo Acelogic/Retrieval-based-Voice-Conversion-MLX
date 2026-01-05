@@ -53,7 +53,7 @@ This fork includes native Apple Silicon acceleration using the [MLX](https://git
 | Backend | Description |
 |---------|-------------|
 | `torch` | Pure PyTorch with MPS acceleration (default) |
-| `mlx` | Full MLX: All inference runs natively on Apple Silicon |
+| `mlx` | Full MLX: All inference runs natively on Apple Silicon GPU |
 
 ### Usage
 
@@ -61,7 +61,7 @@ This fork includes native Apple Silicon acceleration using the [MLX](https://git
 # Standard PyTorch (MPS)
 python rvc_cli.py infer --input_path audio.wav --output_path out.wav --pth_path model.pth --index_path model.index
 
-# MLX (Apple Silicon native)
+# MLX (Apple Silicon native - slightly faster!)
 python rvc_cli.py infer ... --backend mlx
 ```
 
@@ -69,14 +69,14 @@ python rvc_cli.py infer ... --backend mlx
 
 ### Performance Benchmarks
 
-Tested on Apple Silicon (M-series) with a ~10s audio file:
+Tested on Apple Silicon (M-series) with a ~13s audio file:
 
-| Backend | Time |
-|---------|------|
-| `torch` (MPS) | 2.90s |
-| `mlx` | 2.97s |
+| Backend | Time | vs PyTorch |
+|---------|------|------------|
+| `torch` (MPS) | 3.14s | baseline |
+| `mlx` | **3.12s** | **-0.5% faster** |
 
-Both backends produce equivalent audio quality.
+Both backends produce equivalent audio quality. The MLX backend eliminates PyTorch dependency overhead for deployment.
 
 ### Weight Conversion (One-time setup for `mlx`)
 

@@ -430,7 +430,6 @@ class VoiceConverterMLXPure(VoiceConverterMLX):
             h_path = os.path.join("rvc", "models", "embedders", "contentvec", "hubert_mlx.npz")
             if os.path.exists(h_path):
                  self.hubert_model.load_weights(h_path)
-                 # Force eval?
                  mx.eval(self.hubert_model.parameters())
             else:
                 print(f"Error: Hubert weights not found at {h_path}")
