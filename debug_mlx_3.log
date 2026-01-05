@@ -1,0 +1,21 @@
+Traceback (most recent call last):
+  File "/Users/mcruz/Developer/Retrieval-based-Voice-Conversion-MLX/rvc_cli.py", line 2196, in main
+    run_infer_script(
+  File "/Users/mcruz/Developer/Retrieval-based-Voice-Conversion-MLX/rvc_cli.py", line 183, in run_infer_script
+    infer_pipeline.convert_audio(
+  File "/Users/mcruz/Developer/Retrieval-based-Voice-Conversion-MLX/rvc/infer/infer.py", line 250, in convert_audio
+    self.get_vc(model_path, sid)
+  File "/Users/mcruz/Developer/Retrieval-based-Voice-Conversion-MLX/rvc/infer/infer_mlx.py", line 203, in get_vc
+    self.mlx_model = Synthesizer(
+  File "/Users/mcruz/Developer/Retrieval-based-Voice-Conversion-MLX/rvc/lib/mlx/synthesizers.py", line 51, in __init__
+    self.dec = HiFiGANNSFGenerator(
+  File "/Users/mcruz/Developer/Retrieval-based-Voice-Conversion-MLX/rvc/lib/mlx/generators.py", line 210, in __init__
+    self.m_source = SourceModuleHnNSF(sample_rate=sr, harmonic_num=0)
+  File "/Users/mcruz/Developer/Retrieval-based-Voice-Conversion-MLX/rvc/lib/mlx/generators.py", line 183, in __init__
+    self.l_sin_gen = SineGenerator(sample_rate, harmonic_num, sine_amp, add_noise_std, voiced_threshod)
+NameError: name 'SineGenerator' is not defined
+
+Using HiFi-GAN vocoder
+Loading MLX model: /Users/mcruz/Library/Application Support/Replay/com.replay.Replay/models/Slim Shady/model.pth
+An error occurred during execution: name 'SineGenerator' is not defined
+
