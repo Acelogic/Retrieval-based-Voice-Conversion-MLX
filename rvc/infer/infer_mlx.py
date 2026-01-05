@@ -208,7 +208,7 @@ class VoiceConverterMLX(VoiceConverterTorch):
             )
             # Use load_weights assuming flattened structure
             # self.mlx_model.load_weights(list(renamed_weights.items())) -- expects file
-            self.mlx_model.update(renamed_weights) 
+            self.mlx_model.update(renamed_weights)
             # MX eval to ensure weights loaded/cached
             mx.eval(self.mlx_model.parameters())
             

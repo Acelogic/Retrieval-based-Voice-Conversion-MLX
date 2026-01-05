@@ -438,6 +438,7 @@ class RMVPE0Predictor:
             print(f"RMVPE MLX weights not found at {weights_path}")
         else:
             self.model.load_weights(weights_path)
+            mx.eval(self.model.parameters())
             
         # Constants for decode
         N_CLASS = 360
