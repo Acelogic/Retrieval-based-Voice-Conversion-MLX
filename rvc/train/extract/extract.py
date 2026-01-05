@@ -212,7 +212,14 @@ if __name__ == "__main__":
         ]
         files.append(file_info)
 
-    devices = ["cpu"] if gpus == "-" else [f"cuda:{idx}" for idx in gpus.split("-")]
+    if gpus == "-":
+        devices = ["cpu"]
+    elif torch.cuda.is_available():
+        devices = [f"cuda:{idx}" for idx in gpus.split("-")]
+    elif torch.backends.mps.is_available():
+        devices = ["mps"]
+    else:
+        devices = ["cpu"]
 
     run_pitch_extraction(files, devices, f0_method, num_processes)
 

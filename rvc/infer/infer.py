@@ -363,12 +363,7 @@ class VoiceConverter:
             sid (int, optional): Speaker ID. Default is 0.
             **kwargs: Additional keyword arguments.
         """
-        pid = os.getpid()
         try:
-            with open(
-                os.path.join(now_dir, "assets", "infer_pid.txt"), "w"
-            ) as pid_file:
-                pid_file.write(str(pid))
             start_time = time.time()
             print(f"Converting audio batch '{audio_input_paths}'...")
             audio_files = [
@@ -410,8 +405,6 @@ class VoiceConverter:
         except Exception as error:
             print(f"An error occurred during audio batch conversion: {error}")
             print(traceback.format_exc())
-        finally:
-            os.remove(os.path.join(now_dir, "assets", "infer_pid.txt"))
 
     def get_vc(self, weight_root, sid):
         """
@@ -425,6 +418,8 @@ class VoiceConverter:
             self.cleanup_model()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+            elif torch.backends.mps.is_available():
+                torch.mps.empty_cache()
 
         if not self.loaded_model or self.loaded_model != weight_root:
             self.load_model(weight_root)
@@ -445,10 +440,14 @@ class VoiceConverter:
             self.hubert_model = self.net_g = self.n_spk = self.vc = self.tgt_sr = None
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+            elif torch.backends.mps.is_available():
+                torch.mps.empty_cache()
 
         del self.net_g, self.cpt
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+        elif torch.backends.mps.is_available():
+            torch.mps.empty_cache()
         self.cpt = None
 
     def load_model(self, weight_root):

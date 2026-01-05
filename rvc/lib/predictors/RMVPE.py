@@ -506,7 +506,10 @@ class RMVPE0Predictor:
         mel = self.mel_extractor(audio, center=True)
         del audio
         with torch.no_grad():
-            torch.cuda.empty_cache()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            elif torch.backends.mps.is_available():
+                torch.mps.empty_cache()
         hidden = self.mel2hidden(mel)
         hidden = hidden.squeeze(0).cpu().numpy()
         f0 = self.decode(hidden, thred=thred)

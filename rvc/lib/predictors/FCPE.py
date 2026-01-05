@@ -726,7 +726,12 @@ class FCPE(nn.Module):
 class FCPEInfer:
     def __init__(self, model_path, device=None, dtype=torch.float32):
         if device is None:
-            device = "cuda" if torch.cuda.is_available() else "cpu"
+            if torch.cuda.is_available():
+                device = "cuda"
+            elif torch.backends.mps.is_available():
+                device = "mps"
+            else:
+                device = "cpu"
         self.device = device
         ckpt = torch.load(
             model_path, map_location=torch.device(self.device), weights_only=True
@@ -769,7 +774,12 @@ class Wav2Mel:
         self.sample_rate = args.mel.sampling_rate
         self.hop_size = args.mel.hop_size
         if device is None:
-            device = "cuda" if torch.cuda.is_available() else "cpu"
+            if torch.cuda.is_available():
+                device = "cuda"
+            elif torch.backends.mps.is_available():
+                device = "mps"
+            else:
+                device = "cpu"
         self.device = device
         self.dtype = dtype
         self.stft = STFT(
@@ -849,7 +859,15 @@ class FCPEF0Predictor(F0Predictor):
         self.hop_length = hop_length
         self.f0_min = f0_min
         self.f0_max = f0_max
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        if device is None:
+            if torch.cuda.is_available():
+                self.device = "cuda"
+            elif torch.backends.mps.is_available():
+                self.device = "mps"
+            else:
+                self.device = "cpu"
+        else:
+            self.device = device
         self.threshold = threshold
         self.sample_rate = sample_rate
         self.dtype = dtype

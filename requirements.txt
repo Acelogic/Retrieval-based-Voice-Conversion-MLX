@@ -2,44 +2,41 @@
 pip>=23.3; sys_platform == 'darwin'
 wheel; sys_platform == 'darwin'
 PyYAML; sys_platform == 'darwin'
-numpy==1.26.4
-requests>=2.31.0,<2.32.0
+numpy<2
+requests
 tqdm
 wget
 
 # Audio processing
-ffmpeg-python>=0.2.0
-faiss-cpu==1.7.3
-librosa==0.11.0
-scipy==1.11.1
-soundfile==0.12.1
+ffmpeg-python
+faiss-cpu==1.7.4
+librosa
+scipy
+soundfile
 noisereduce
 pedalboard
 stftpitchshift
 soxr
 
 # Machine learning and deep learning
-omegaconf>=2.0.6; sys_platform == 'darwin'
-numba; sys_platform == 'linux'
-numba==0.61.0; sys_platform == 'darwin' or sys_platform == 'win32'
-torch==2.7.1; sys_platform == 'darwin'
-torch==2.7.1+cu128; sys_platform == 'linux' or sys_platform == 'win32'
-torchaudio==2.7.1; sys_platform == 'darwin'
-torchaudio==2.7.1+cu128; sys_platform == 'linux' or sys_platform == 'win32'
-torchvision==0.22.1; sys_platform == 'darwin'
-torchvision==0.22.1+cu128; sys_platform == 'linux' or sys_platform == 'win32'
-torchcrepe==0.0.23
+omegaconf; sys_platform == 'darwin'
+numba
+torch==2.4.0; sys_platform == 'darwin'
+torchaudio==2.4.0; sys_platform == 'darwin'
+torchvision==0.19.0; sys_platform == 'darwin'
+torchcrepe
 torchfcpe
 einops
-transformers==4.44.2
+transformers
+beautifulsoup4
 
 # Visualization and UI
-matplotlib==3.7.2
+matplotlib
 tensorboard
 tensorboardX
 
 # Miscellaneous utilities
-certifi>=2023.07.22; sys_platform == 'darwin'
-antlr4-python3-runtime==4.8; sys_platform == 'darwin'
-edge-tts==7.2.0
+certifi; sys_platform == 'darwin'
+antlr4-python3-runtime
+edge-tts
 webrtcvad
