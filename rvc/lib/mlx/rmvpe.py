@@ -54,91 +54,34 @@ class ConvTranspose2d(nn.Module):
             self.bias = None
 
     def __call__(self, x):
-        # x: (N, H, W, C)
-        # stride: (sh, sw)
-        sh, sw = self.stride
-        kh, kw = self.kernel_size
-        
-        # 1. Zero-insertion (Input upscale)
-        # Output H_new = H * sh, W_new = W * sw (before padding adjustment)
-        N, H, W, C = x.shape
-        
-        # Create canvas
-        # We want to place pixels at stride steps.
-        # But we must handle the case where "output_padding" adds extra rows/cols?
-        # PyTorch TransposeConv:
-        # H_out = (H-1)*stride - 2*padding + dilation*(kernel-1) + output_padding + 1
-        
-        # Let's simplify:
-        # 1. Upscale by inserting zeros.
-        #    x_up size: (N, H*sh, W*sw, C)
-        x_up = mx.zeros((N, H * sh, W * sw, C), dtype=x.dtype)
-        # Insert x into grid
-        # x_up[:, ::sh, ::sw, :] = x  <-- MLX supports stride slice assignment?
-        # If not, we might need a workaround.
-        # MLX 0.16 supports advanced indexing updates?
-        # Let's assume slice update works.
-        x_up[:, ::sh, ::sw, :] = x
-        
-        # 2. Convolve with stride=1
-        # To mimic TransposeConv, we convolve the Zero-inserted input with the *rotated* kernel (or just same kernel if we flip weights?).
-        # PyTorch TransposeConv is mathematically conv with input gradient.
-        # It's equivalent to convolving zero-inserted input with "grad_weight" equivalent?
-        # Standard formulation: TransposeConv(x, w) ~ Conv(InsertZeros(x), Rotated180(w)).
-        # Since we load PyTorch weights, we can transpose/flip them in the converter to match a standard Conv2d operation here.
-        
-        # Padding:
-        # We need to PAD `x_up` such that the result matches expected output size.
-        # Pytorch `output_padding` adds extra zeros to right/bottom.
-        
-        # Let's rely on `mx.conv2d` with `padding`.
-        # Wait, if we use `mx.conv2d`, we specify padding for the conv.
-        # Effective kernel size is K.
-        # We want to reverse the effect of "valid" conv that reduced size?
-        # No, TransposeConv INCREASES size.
-        
-        # If we manually upscaled `x_up`, we just run standard conv.
-        # We need to ensure we used correct padding to get (H_out, W_out).
-        # We can use `mx.conv2d` with `padding` argument or manual pad.
-        
-        # Standard Conv2d on Upscaled Input:
-        # We set `stride=1` for this conv.
-        # We set `padding`. PyTorch TransposeConv `padding` argument REMOVES pixels (it's the inverse of conv padding).
-        # So we crop the output?
-        # Or we pad `x_up`?
-        
-        # Simpler approach:
-        # Pad `x_up` by `kernel_size - 1`.
-        # Run Valid Conv (no padding).
-        # Result size: (H*sh + K - 1) - K + 1 = H*sh.
-        # Then we handle PyTorch `padding` (cropping).
-        
-        # Let's assume `weights` are properly converted to work with `mx.conv2d` (flipped if necessary).
-        
-        # Manual Pad `x_up` 
-        # Pad amount = (K-1) - padding + output_padding?
-        # This is getting complicated to exact match.
-        
-        # Let's try to trust `mx.conv2d` to handle "same" or explicit.
-        # We will use `mx.conv2d` on `x_up` with `padding=0` (Valid) but pre-pad `x_up`.
-        
-        pad_h = max(0, kh - 1 - self.padding[0])
-        pad_w = max(0, kw - 1 - self.padding[1])
-        
-        # Add output_padding
-        # op = self.output_padding
-        # Extra padding at end?
-        
-        x_up = mx.pad(x_up, ((0,0), (pad_h, pad_h + self.output_padding[0]), (pad_w, pad_w + self.output_padding[1]), (0,0)))
-        
-        # Conv
-        # We use a standard functional conv2d since we have weights in `self.weight`
-        # self.weight shape in memory: (Out, H, W, In) (standard MLX conv)
-        y = mx.conv2d(x_up, self.weight, stride=1, padding=0)
-        
+        # x: (N, H, W, C_in)
+        # MLX has mx.conv_transpose2d available in version 0.10.0+
+        # Note: MLX doesn't support output_padding, so we'll add it manually
+
+        # MLX conv_transpose2d signature:
+        # mx.conv_transpose2d(input, weight, stride=1, padding=0, dilation=1, groups=1)
+        # input: (N, H, W, C_in)
+        # weight: (C_out, kernel_h, kernel_w, C_in)  <- This is MLX format
+        # Returns: (N, H_out, W_out, C_out)
+
+        y = mx.conv_transpose2d(
+            x,
+            self.weight,
+            stride=self.stride,
+            padding=self.padding
+        )
+
+        # Manually add output_padding if needed
+        # output_padding adds extra rows/columns to the output
+        if self.output_padding != (0, 0) and self.output_padding != 0:
+            op_h, op_w = self.output_padding if isinstance(self.output_padding, tuple) else (self.output_padding, self.output_padding)
+            if op_h > 0 or op_w > 0:
+                # Add padding to bottom and right
+                y = mx.pad(y, ((0, 0), (0, op_h), (0, op_w), (0, 0)))
+
         if self.bias is not None:
             y = y + self.bias
-            
+
         return y
 
 class ConvBlockRes(nn.Module):
@@ -257,8 +200,26 @@ class ResDecoderBlock(nn.Module):
 
     def __call__(self, x, concat_tensor):
         x = self.conv1_trans(x)
+
+        # Match spatial dimensions to concat_tensor
+        # This handles cases where output_padding doesn't perfectly align dimensions
+        target_shape = concat_tensor.shape
+        current_shape = x.shape
+
+        if current_shape[1] != target_shape[1] or current_shape[2] != target_shape[2]:
+            # Pad to match target spatial dimensions
+            pad_h = target_shape[1] - current_shape[1]
+            pad_w = target_shape[2] - current_shape[2]
+
+            if pad_h > 0 or pad_w > 0:
+                # Pad on the right/bottom
+                x = mx.pad(x, ((0, 0), (0, pad_h), (0, pad_w), (0, 0)))
+            elif pad_h < 0 or pad_w < 0:
+                # Crop if decoder output is larger (shouldn't happen but handle it)
+                x = x[:, :target_shape[1], :target_shape[2], :]
+
         x = mx.concatenate([x, concat_tensor], axis=-1)
-        
+
         for block in self.blocks:
             x = block(x)
         return x
@@ -304,33 +265,38 @@ class BiGRU(nn.Module):
         super().__init__()
         self.num_layers = num_layers
         self.hidden_features = hidden_features
-        
-        # For each layer, create forward and backward GRUs
-        self.forward_grus = []
-        self.backward_grus = []
-        
+
+        # Create containers for forward and backward GRUs
+        class GRUContainer(nn.Module):
+            def __init__(self):
+                super().__init__()
+
+        self.forward_grus = GRUContainer()
+        self.backward_grus = GRUContainer()
+
+        # Add GRUs as numbered attributes
         for i in range(num_layers):
             in_size = input_features if i == 0 else hidden_features * 2
-            self.forward_grus.append(nn.GRU(in_size, hidden_features, bias=True))
-            self.backward_grus.append(nn.GRU(in_size, hidden_features, bias=True))
-        
+            setattr(self.forward_grus, str(i), nn.GRU(in_size, hidden_features, bias=True))
+            setattr(self.backward_grus, str(i), nn.GRU(in_size, hidden_features, bias=True))
+
     def __call__(self, x):
          # x: (N, L, C)
          for i in range(self.num_layers):
-             fwd_gru = self.forward_grus[i]
-             bwd_gru = self.backward_grus[i]
-             
-             # Forward pass
-             out_fwd, _ = fwd_gru(x)
-             
-             # Backward pass (reverse, process, reverse back)
-             x_rev = mx.flip(x, axis=1)
-             out_bwd_rev, _ = bwd_gru(x_rev)
-             out_bwd = mx.flip(out_bwd_rev, axis=1)
-             
+             fwd_gru = getattr(self.forward_grus, str(i))
+             bwd_gru = getattr(self.backward_grus, str(i))
+
+             # Forward pass (MLX GRU returns just output, not tuple)
+             out_fwd = fwd_gru(x)
+
+             # Backward pass (reverse along time axis, process, reverse back)
+             x_rev = x[:, ::-1, :]  # Reverse time dimension
+             out_bwd_rev = bwd_gru(x_rev)
+             out_bwd = out_bwd_rev[:, ::-1, :]  # Reverse back
+
              # Concatenate
              x = mx.concatenate([out_fwd, out_bwd], axis=-1)
-             
+
          return x
 
 class E2E(nn.Module):
@@ -340,21 +306,34 @@ class E2E(nn.Module):
         self.cnn = nn.Conv2d(en_out_channels, 3, kernel_size=3, padding=1)
         
         N_CLASS = 360
+
+        # FCLayers with manual weight loading workaround
+        # Weights are structured as fc.layers.0.0.* and fc.layers.0.1.*
+        # But MLX can't traverse nested containers, so we'll load manually
+        class FCLayers(nn.Module):
+            def __init__(self, bigru, linear, has_gru):
+                super().__init__()
+                self.has_gru = has_gru
+                self.bigru = bigru
+                self.linear = linear
+
+            def __call__(self, x):
+                if self.has_gru:
+                    x = self.bigru(x)
+                x = self.linear(x)
+                return x
+
         if n_gru:
-            self.fc = nn.Sequential([
-                BiGRU(3 * 128, 256, n_gru),
-                nn.Linear(512, N_CLASS),
-                nn.Dropout(0.25),
-                nn.Sigmoid() # MLX Sigmoid? nn.Sigmoid() layer? or mx.sigmoid. 
-                # nn.Sigmoid doesn't exist in some versions.
-                # Use lambda or activation wrapper.
-            ])
+            bigru = BiGRU(3 * 128, 256, n_gru)
+            linear = nn.Linear(512, N_CLASS)
+            self.fc = FCLayers(bigru, linear, has_gru=True)
         else:
-            self.fc = nn.Sequential([
-                nn.Linear(3 * 128, N_CLASS), # 3*N_MELS? N_MELS=128
-                nn.Dropout(0.25),
-                nn.Sigmoid()
-            ])
+            linear = nn.Linear(3 * 128, N_CLASS)
+            self.fc = FCLayers(None, linear, has_gru=False)
+
+        # Dropout and Sigmoid are applied without weights
+        self.dropout = nn.Dropout(0.25)
+        self.sigmoid = nn.Sigmoid()
 
     def __call__(self, mel):
         # mel: (N, L, C) or (N, C, L)?
@@ -362,21 +341,21 @@ class E2E(nn.Module):
         # PyTorch impl: `mel = mel.transpose(-1, -2).unsqueeze(1)`
         # Input 'mel' to `forward` is (N, n_mels, T).
         # Becomes (N, 1, n_mels, T).
-        
+
         # MLX: We prefer (N, T, n_mels).
         # We'll adjust input processing in pipeline.
-        
+
         # UNet expects (N, H, W, C).
         # H=n_mels, W=T, C=1.
-        
+
         # Pipeline sends (N, T, n_mels).
         # We want H=n_mels, W=T.
         # So x = mel.transpose(0, 2, 1) -> (N, n_mels, T)
         # x = x.unsqueeze(-1) -> (N, n_mels, T, 1)
-        
+
         # x = self.unet(mel)
         x = self.unet(mel)
-        
+
         x = self.cnn(x) # (N, H, W, 3)
         
         # Prepare for GRU
@@ -411,13 +390,17 @@ class E2E(nn.Module):
         # CNN out: (N, T, n_mels, 3).
         # We need (N, T, n_mels * 3).
         # x.reshape(N, T, -1).
-        
-        x = self.cnn(x)
+
+        # CNN already called above - just reshape
         B, T, M, C = x.shape
         x = x.reshape(B, T, M * C)
-        
-        # FC
+
+        # FC layers (BiGRU + Linear)
         x = self.fc(x)
+
+        # Apply dropout and sigmoid
+        x = self.dropout(x)
+        x = self.sigmoid(x)
         return x
 
 import numpy as np
@@ -437,13 +420,85 @@ class RMVPE0Predictor:
         if not os.path.exists(weights_path):
             print(f"RMVPE MLX weights not found at {weights_path}")
         else:
-            self.model.load_weights(weights_path)
+            # Load weights with strict=False to handle custom structure
+            try:
+                self.model.load_weights(weights_path, strict=False)
+            except Exception as e:
+                print(f"Warning: Weight loading with strict=False failed: {e}")
+                print("Attempting manual weight loading...")
+                self._manual_load_weights(weights_path)
+
             mx.eval(self.model.parameters())
             
         # Constants for decode
         N_CLASS = 360
         self.cents_mapping = 20 * np.arange(N_CLASS) + 1997.3794084376191
         self.cents_mapping = np.pad(self.cents_mapping, (4, 4))
+
+    def _manual_load_weights(self, weights_path):
+        """Manually load FC layer weights that don't match the model structure."""
+        import numpy as np
+
+        # Load all weights
+        weights_dict = np.load(weights_path)
+
+        # Extract FC layer weights (fc.layers.0.0.* and fc.layers.0.1.*)
+        fc_weights = {}
+        for key in weights_dict.keys():
+            if key.startswith('fc.layers.0.'):
+                fc_weights[key] = weights_dict[key]
+
+        # Map to model structure
+        # fc.layers.0.0.forward_grus.0.* -> fc.bigru.forward_grus.0.*
+        # fc.layers.0.1.* -> fc.linear.*
+
+        if hasattr(self.model.fc, 'bigru') and self.model.fc.bigru is not None:
+            # Load BiGRU weights
+            bigru = self.model.fc.bigru
+
+            # Forward GRUs
+            for key, value in fc_weights.items():
+                if 'forward_grus' in key:
+                    # Extract layer index and parameter name
+                    # fc.layers.0.0.forward_grus.0.Wh -> forward_grus.0.Wh
+                    parts = key.split('.')
+                    layer_idx = parts[4]  # '0'
+                    param_name = parts[5]  # 'Wh', 'Wx', 'b', 'bhn'
+
+                    gru_layer = getattr(bigru.forward_grus, layer_idx)
+                    if param_name == 'Wh':
+                        gru_layer.Wh = mx.array(value)
+                    elif param_name == 'Wx':
+                        gru_layer.Wx = mx.array(value)
+                    elif param_name == 'b':
+                        gru_layer.b = mx.array(value)
+                    elif param_name == 'bhn':
+                        gru_layer.bhn = mx.array(value)
+
+                elif 'backward_grus' in key:
+                    parts = key.split('.')
+                    layer_idx = parts[4]
+                    param_name = parts[5]
+
+                    gru_layer = getattr(bigru.backward_grus, layer_idx)
+                    if param_name == 'Wh':
+                        gru_layer.Wh = mx.array(value)
+                    elif param_name == 'Wx':
+                        gru_layer.Wx = mx.array(value)
+                    elif param_name == 'b':
+                        gru_layer.b = mx.array(value)
+                    elif param_name == 'bhn':
+                        gru_layer.bhn = mx.array(value)
+
+        # Load Linear layer weights
+        # fc.layers.0.1.weight -> fc.linear.weight
+        # fc.layers.0.1.bias -> fc.linear.bias
+        if 'fc.layers.0.1.weight' in fc_weights:
+            self.model.fc.linear.weight = mx.array(fc_weights['fc.layers.0.1.weight'])
+        if 'fc.layers.0.1.bias' in fc_weights:
+            self.model.fc.linear.bias = mx.array(fc_weights['fc.layers.0.1.bias'])
+
+        print(f"✅ Manually loaded {len(fc_weights)} FC layer weights")
 
     def _create_mel_filterbank(self, n_fft, n_mels, sr, fmin, fmax):
         """Create mel filterbank matrix (computed once, cached)."""
@@ -526,9 +581,10 @@ class RMVPE0Predictor:
         # Create frame indices
         frame_starts = np.arange(num_frames) * hop_length
         frame_indices = frame_starts[:, None] + np.arange(n_fft)
-        
-        # Gather frames
-        frames = audio_mx[frame_indices]  # (num_frames, n_fft)
+
+        # Gather frames (convert indices to MLX array for indexing)
+        frame_indices_mx = mx.array(frame_indices)
+        frames = audio_mx[frame_indices_mx]  # (num_frames, n_fft)
         
         # Apply window
         frames = frames * self._window
@@ -592,18 +648,25 @@ class RMVPE0Predictor:
         # (1, T, n_mels, 1).
         
         mel_mx = mel_mx.transpose(1, 0)[None, :, :, None]
-        
-        # Chunking logic (simplified: feed all?)
-        # RMVPE chunks to save memory/batch?
-        # "chunk_size=32000" frames.
-        # If short, just run.
-        # If long, chunk.
-        
-        # For MLX efficiency, let's just run it if we trust memory (Unified Memory often huge).
-        # But `mel` pads.
-        
-        # If we skip chunking for now:
-        hidden = self.model(mel_mx)
+        pad_frames = mel_mx.shape[1]
+
+        # Process: chunked or single-pass
+        if chunk_size is None or chunk_size <= 0 or pad_frames <= chunk_size:
+            # Single pass for short audio
+            hidden = self.model(mel_mx)
+        else:
+            # Chunked processing for better GPU cache utilization
+            output_chunks = []
+            for start in range(0, pad_frames, chunk_size):
+                end = min(start + chunk_size, pad_frames)
+                mel_chunk = mel_mx[:, start:end, :, :]
+
+                out_chunk = self.model(mel_chunk)
+                mx.eval(out_chunk)  # Force evaluation (MLX lazy evaluation)
+                output_chunks.append(out_chunk)
+
+            # Concatenate along time dimension
+            hidden = mx.concatenate(output_chunks, axis=1)
         # Output hidden: (N, T, 360).
         
         # Strip padding
