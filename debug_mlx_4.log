@@ -1,5 +1,0 @@
-Using HiFi-GAN vocoder
-Loading MLX model: /Users/mcruz/Library/Application Support/Replay/com.replay.Replay/models/Slim Shady/model.pth
-Converting audio 'TestAudio/coder_audio_stock.wav'...
-Conversion completed at 'TestAudio/coder_mlx_slim.wav' in 3.29 seconds.
-

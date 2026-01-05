@@ -6,6 +6,7 @@ A stripped-down, command-line interface version of the Retrieval-based Voice Con
 
 - **CLI-Only**: No WebUI overhead (Gradio removed).
 - **Core ML Functionality**: Supports core RVC features including Inference, Training, and Preprocessing.
+- **Apple Silicon Native**: Full MLX inference support for M-series Macs.
 - **Lightweight**: Minimized dependencies for easier deployment.
 
 ## Installation
@@ -35,7 +36,7 @@ python rvc_cli.py --help
 
 **Inference:**
 ```bash
-python rvc_cli.py infer --model_path <path_to_pth> --input_path <audio_file> --output_path <output_file> --index_path <path_to_index>
+python rvc_cli.py infer --input_path <audio_file> --output_path <output_file> --pth_path <path_to_pth> --index_path <path_to_index>
 ```
 
 **Training:**
@@ -43,7 +44,51 @@ python rvc_cli.py infer --model_path <path_to_pth> --input_path <audio_file> --o
 python rvc_cli.py train --model_name <name> --total_epoch 100 ...
 ```
 
-**(Add more usage examples as you explore the CLI options)**
+## Apple Silicon (MLX) Acceleration
+
+This fork includes native Apple Silicon acceleration using the [MLX](https://github.com/ml-explore/mlx) framework.
+
+### Backend Options
+
+| Backend | Description |
+|---------|-------------|
+| `torch` | Pure PyTorch with MPS acceleration (default) |
+| `mlx` | Full MLX: All inference runs natively on Apple Silicon |
+
+### Usage
+
+```bash
+# Standard PyTorch (MPS)
+python rvc_cli.py infer --input_path audio.wav --output_path out.wav --pth_path model.pth --index_path model.index
+
+# MLX (Apple Silicon native)
+python rvc_cli.py infer ... --backend mlx
+```
+
+> **Note**: On macOS, set `export OMP_NUM_THREADS=1` to prevent faiss-related crashes.
+
+### Performance Benchmarks
+
+Tested on Apple Silicon (M-series) with a ~10s audio file:
+
+| Backend | Time |
+|---------|------|
+| `torch` (MPS) | 2.90s |
+| `mlx` | 2.97s |
+
+Both backends produce equivalent audio quality.
+
+### Weight Conversion (One-time setup for `mlx`)
+
+Before using the MLX backend for the first time, convert the embedder weights:
+
+```bash
+# Convert Hubert embedder weights
+python rvc/lib/mlx/convert_hubert.py
+
+# Convert RMVPE pitch predictor weights
+python rvc/lib/mlx/convert_rmvpe.py
+```
 
 ## License
 
