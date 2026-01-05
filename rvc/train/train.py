@@ -76,20 +76,11 @@ if vocoder == "RefineGAN":
 
 current_dir = os.getcwd()
 
+
 try:
-    with open(os.path.join(current_dir, "assets", "config.json"), "r") as f:
-        config = json.load(f)
-        precision = config["precision"]
-        if (
-            precision == "bf16"
-            and torch.cuda.is_available()
-            and torch.cuda.is_bf16_supported()
-        ):
-            train_dtype = torch.bfloat16
-        elif precision == "fp16" and torch.cuda.is_available():
-            train_dtype = torch.float16
-        else:
-            train_dtype = torch.float32
+    # Removed assets/config.json reading logic as assets dir is gone.
+    # Defaulting to float32 which is safe for MPS.
+    train_dtype = torch.float32
 except (FileNotFoundError, json.JSONDecodeError, KeyError):
     train_dtype = torch.float32
 
@@ -693,7 +684,7 @@ def train_and_evaluate(
             ) = info
 
             with torch.amp.autocast(
-                device_type="cuda", enabled=use_amp, dtype=train_dtype
+                device_type="cuda" if device.type == "cuda" else "cpu", enabled=use_amp, dtype=train_dtype
             ):
                 # Forward pass
                 model_output = net_g(
@@ -712,7 +703,7 @@ def train_and_evaluate(
                     )
             for _ in range(d_step_per_g_step):  # default x1
                 with torch.amp.autocast(
-                    device_type="cuda", enabled=use_amp, dtype=train_dtype
+                    device_type="cuda" if device.type == "cuda" else "cpu", enabled=use_amp, dtype=train_dtype
                 ):
                     y_d_hat_r, y_d_hat_g, _, _ = net_d(wave, y_hat.detach())
                 loss_disc, _, _ = discriminator_loss(y_d_hat_r, y_d_hat_g)
@@ -729,7 +720,7 @@ def train_and_evaluate(
                     optim_d.step()
 
             with torch.amp.autocast(
-                device_type="cuda", enabled=use_amp, dtype=train_dtype
+                device_type="cuda" if device.type == "cuda" else "cpu", enabled=use_amp, dtype=train_dtype
             ):
                 # Generator backward and update
                 _, y_d_hat_g, fmap_r, fmap_g = net_d(wave, y_hat)
@@ -886,7 +877,7 @@ def train_and_evaluate(
 
         if epoch % save_every_epoch == 0:
             with torch.amp.autocast(
-                device_type="cuda", enabled=use_amp, dtype=train_dtype
+                device_type="cuda" if device.type == "cuda" else "cpu", enabled=use_amp, dtype=train_dtype
             ):
                 with torch.no_grad():
                     if hasattr(net_g, "module"):
