@@ -110,6 +110,7 @@ def run_infer_script(
     delay_feedback: float = 0.0,
     delay_mix: float = 0.5,
     sid: int = 0,
+    backend: str = "torch",
 ):
     kwargs = {
         "audio_input_path": input_path,
@@ -174,7 +175,11 @@ def run_infer_script(
         "delay_mix": delay_mix,
         "sid": sid,
     }
-    infer_pipeline = import_voice_converter()
+    if backend == "mlx":
+        from rvc.infer.infer_mlx import VoiceConverterMLX
+        infer_pipeline = VoiceConverterMLX()
+    else:
+        infer_pipeline = import_voice_converter()
     infer_pipeline.convert_audio(
         **kwargs,
     )
@@ -766,6 +771,13 @@ def parse_arguments():
         choices=["WAV", "MP3", "FLAC", "OGG", "M4A"],
         default="WAV",
     )
+    infer_parser.add_argument(
+        "--backend",
+        type=str,
+        help="Inference backend to use.",
+        choices=["torch", "mlx"],
+        default="torch",
+    )
     embedder_model_description = (
         "Choose the model used for generating speaker embeddings."
     )
@@ -1155,6 +1167,7 @@ def parse_arguments():
         default=0.5,
         required=False,
     )
+
 
     # Parser for 'batch_infer' mode
     batch_infer_parser = subparsers.add_parser(
@@ -2204,6 +2217,7 @@ def main():
                 formant_qfrency=args.formant_qfrency,
                 formant_timbre=args.formant_timbre,
                 sid=args.sid,
+                backend=args.backend,
                 post_process=args.post_process,
                 reverb=args.reverb,
                 pitch_shift=args.pitch_shift,

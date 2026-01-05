@@ -22,3 +22,5 @@ rvc/models
 env
 venv
 .venv
+
+.DS_Store
