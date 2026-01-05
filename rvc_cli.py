@@ -176,8 +176,8 @@ def run_infer_script(
         "sid": sid,
     }
     if backend == "mlx":
-        from rvc.infer.infer_mlx import VoiceConverterMLX
-        infer_pipeline = VoiceConverterMLX()
+        from rvc.infer.infer_mlx import VoiceConverterMLXPure
+        infer_pipeline = VoiceConverterMLXPure()
     else:
         infer_pipeline = import_voice_converter()
     infer_pipeline.convert_audio(
