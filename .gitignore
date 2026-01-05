@@ -24,3 +24,5 @@ venv
 .venv
 
 .DS_Store
+**/.DS_Store
+rvc/.DS_Store

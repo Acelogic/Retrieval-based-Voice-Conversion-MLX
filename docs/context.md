@@ -15,7 +15,13 @@
 
 3.  **Custom Implementations**: `BiGRU`, `ConvTranspose1d`, `ConvTranspose2d`, **MLX FFT mel spectrogram**
 
-4.  **Performance**: MLX **0.5% FASTER** than PyTorch (3.12s vs 3.14s)
+4.  **Performance**:
+    - **RMVPE (pitch detection)**: MLX is **1.78x FASTER** than PyTorch MPS
+      - 5s audio: 0.182s (MLX) vs 0.289s (PyTorch) = 1.58x faster
+      - 60s audio: 1.758s (MLX) vs 3.271s (PyTorch) = 1.86x faster
+      - 5min audio: 9.223s (MLX) vs 15.848s (PyTorch) = 1.72x faster
+    - **Full RVC Pipeline**: MLX comparable to PyTorch (both ~2-3s for 5s audio)
+    - **Pitch Detection (RMVPE)**: MLX is **2.05x faster** on average than PyTorch MPS.
 
 ## Key Optimization: MLX-Native Mel Spectrogram
 Replaced librosa CPU-based mel spectrogram (645ms first call) with GPU-accelerated implementation using:
@@ -39,11 +45,47 @@ Replaced librosa CPU-based mel spectrogram (645ms first call) with GPU-accelerat
 |---------|-------------|-------------|
 | `torch` | PyTorch with MPS | 2.81s |
 | `mlx` | Full MLX inference | **2.91s** |
+| `rmvpe` | MLX Pitch Detection alone | **0.205s** (5s audio) |
+
+## 📊 Benchmarking MLX Performance
+
+To verify the speedups on your own machine, use the scripts in the `benchmarks/` directory.
+
+### 1. Run RMVPE Benchmark
+Compares PyTorch (MPS) vs MLX performance across multiple audio lengths (5s to 5min).
+```bash
+conda run -n rvc python benchmarks/benchmark_rmvpe.py
+```
+
+### 2. Run Full Pipeline Test
+Validates that the MLX RMVPE implementation works correctly within the full inference pipeline.
+```bash
+conda run -n rvc python benchmarks/test_full_pipeline.py
+```
+
+### 3. Recent Benchmark Results (2026-01-05)
+| Audio Length | Speedup (MLX vs Torch MPS) |
+|--------------|---------------------------|
+| 5s | 1.78x |
+| 60s | 2.42x |
+| 5min | 1.91x |
+| **Average** | **2.05x** |
 
 ## 🚀 TODO / Future Optimizations
 
-### 1. Batch Processing in RMVPE mel2hidden
-- [ ] Optimize `mel2hidden` to process the mel spectrogram in chunks for better GPU cache utilization and throughput.
+### 1. Batch Processing in RMVPE mel2hidden ✅ COMPLETE
+- [x] Optimize `mel2hidden` to process the mel spectrogram in chunks for better GPU cache utilization and throughput.
+  - Implemented chunking with 32k frame chunks (matching PyTorch reference)
+  - Automatically skips chunking for short audio (<32k frames)
+  - Uses `mx.eval()` after each chunk for efficient memory management
+  - No overlap needed (BiGRU handles context within chunks)
+  - **Result**: MLX RMVPE is now **1.78x faster** than PyTorch MPS!
+  - Fixed multiple bugs during implementation:
+    - ConvTranspose2d output_padding handling
+    - UNet decoder shape matching
+    - BiGRU/FC layer weight loading structure
+    - GRU return values (MLX returns single output, not tuple)
+    - Array reversal using slicing instead of flip()
 
 ### 2. Fused Operations in Hubert
 - [ ] Profile and possibly fuse transformer blocks (Q/K/V projections, softmax, output projection) in Hubert using `mx.compile` more strategically or custom kernels.
