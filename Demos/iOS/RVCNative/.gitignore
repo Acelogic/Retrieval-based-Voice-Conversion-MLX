@@ -1,0 +1,31 @@
+# Xcode
+DerivedData/
+build/
+Build/
+Intermediates.noindex/
+xcuserdata/
+*.xcuserstate
+*.xcuserstatel
+*.xcresult/
+*.xccheckout
+*.xcscmblueprint
+*.hmap
+*.ipa
+*.dSYM
+*.dSYM.zip
+
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# CocoaPods
+# Pods/
+
+# fastlane
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots/**/*.png
+fastlane/test_output
+
+# Logs
+*.log

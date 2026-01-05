@@ -100,6 +100,12 @@ Currently, float16 caused a slowdown because of constant casting between float32
 - [ ] Implement `tree_map` to cast all model parameters to `float16` at load time.
 - [ ] Ensure the entire pipeline operates in `float16`, only casting back to `float32` for final storage.
 
+### Current Status
+- **Objective**: Successfully compile `RVCNative` for physical iOS device.
+- **Note**: Simulator support is NOT a priority due to lack of Metal GPU access in the simulator environment. Testing will be performed natively.
+- **Resolved**: `nullptr` crashes in `std::string` constructors (via `device.cpp`, `metal.cpp`, `resident.cpp` patches - now reverted to stock).
+- **Pending**: Verifying successful compilation with stock `mlx-swift` vendor files.
+
 ### 5. Streaming Synthesis
 - [ ] Implement overlapping chunk processing for the Synthesizer to reduce peak memory usage and potentially enable real-time/streaming output.
 
@@ -112,3 +118,14 @@ Currently, float16 caused a slowdown because of constant casting between float32
 
 ### 8. Quantization (INT8/INT4)
 - [ ] Explore `mlx.nn.QuantizedLinear` for the Synthesizer model to reduce memory bandwidth requirements.
+
+## ⚠️ Known Issues
+
+### iOS Simulator Linker Errors
+When building the `RVCNative` demo for the iOS **Simulator**, you will likely see linker errors related to `SwiftUICore`, such as:
+> `ld: warning: Could not parse or use implicit file '.../SwiftUICore.framework/SwiftUICore.tbd': cannot link directly with 'SwiftUICore' because product being built is not an allowed client of it`
+
+**This is EXPECTED behavior on the Simulator and can generate "Build Failed" messages in Xcode logs, but the app often still launches.**
+
+*   **Resolution**: Ignore these errors **IF** you are just verifying logic.
+*   **Best Practice**: Always build and test on a **Physical Device** (iPhone/iPad) where these errors do NOT occur and `mlx-swift` performs correctly. The Simulator release of `mlx-swift` has known limitations.

@@ -1,28 +1,55 @@
+# Compiled / OS
+*.DS_Store
+**/.DS_Store
 *.exe
+*.bin
+*.zip
+*.tar.gz
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+env/
+venv/
+.venv/
+build/
+dist/
+*.egg-info/
+
+# Xcode / iOS
+DerivedData/
+Build/
+Intermediates.noindex/
+*.xcuserstate
+*.xcuserstatel
+*.xcresult/
+*.xccheckout
+*.xcscmblueprint
+xcuserdata/
+*.orig
+
+# Logs
+*.log
+
+# Models and Assets
 *.pt
-*.onnx
-*.pyc
 *.pth
+*.onnx
 *.index
+*.safetensors
+assets/audios/
+assets/datasets/
+logs/
+rvc/models/
+
+# Media
 *.mp3
 *.flac
 *.ogg
 *.m4a
-*.bin
 *.wav
-*.txt
-*.zip
 *.png
-*.safetensors
 
-assets/audios
-assets/datasets
-logs
-rvc/models
-env
-venv
-.venv
-
-.DS_Store
-**/.DS_Store
-rvc/.DS_Store
+# Misc
+*.txt
