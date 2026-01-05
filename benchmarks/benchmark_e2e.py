@@ -16,6 +16,7 @@ NUM_RUNS = 3
 def run_inference(backend):
     output_path = os.path.join(OUTPUT_DIR, f"output_{backend}_bench.wav")
     cmd = [
+        "/usr/bin/time", "-l",
         "conda", "run", "-n", "rvc", "python", "rvc_cli.py", "infer",
         "--backend", backend,
         "--input_path", INPUT_AUDIO,
@@ -32,52 +33,61 @@ def run_inference(backend):
     
     if result.returncode != 0:
         print(f"Error running {backend} inference: {result.stderr}")
-        return None
+        return None, None
     
     # Parse time from output: "Conversion completed at '...' in 2.83 seconds."
-    match = re.search(r"Conversion completed at .* in ([\d\.]+) seconds", result.stdout)
-    if match:
-        return float(match.group(1))
-    else:
+    time_match = re.search(r"Conversion completed at .* in ([\d\.]+) seconds", result.stdout)
+    
+    # Parse memory from stderr: "1540096  maximum resident set size"
+    mem_match = re.search(r"(\d+)\s+maximum resident set size", result.stderr)
+    
+    t = float(time_match.group(1)) if time_match else None
+    m = int(mem_match.group(1)) / (1024 * 1024) if mem_match else None # Convert to MB
+    
+    if t is None:
         print(f"Could not find timing in output for {backend}")
         print(result.stdout)
-        return None
+        
+    return t, m
 
 def main():
     if not os.path.exists(INPUT_AUDIO):
         print(f"Input audio not found: {INPUT_AUDIO}")
         return
 
-    results = {"torch": [], "mlx": []}
+    results = {"torch": {"time": [], "mem": []}, "mlx": {"time": [], "mem": []}}
     
     for i in range(NUM_RUNS):
         print(f"\n--- Run {i+1}/{NUM_RUNS} ---")
         
         # Torch
-        t_torch = run_inference("torch")
+        t_torch, m_torch = run_inference("torch")
         if t_torch:
-            results["torch"].append(t_torch)
-            print(f"Torch: {t_torch:.3f}s")
+            results["torch"]["time"].append(t_torch)
+            results["torch"]["mem"].append(m_torch)
+            print(f"Torch: {t_torch:.3f}s, {m_torch:.1f} MB")
             
         # MLX
-        t_mlx = run_inference("mlx")
+        t_mlx, m_mlx = run_inference("mlx")
         if t_mlx:
-            results["mlx"].append(t_mlx)
-            print(f"MLX: {t_mlx:.3f}s")
+            results["mlx"]["time"].append(t_mlx)
+            results["mlx"]["mem"].append(m_mlx)
+            print(f"MLX: {t_mlx:.3f}s, {m_mlx:.1f} MB")
 
-    print("\n" + "="*50)
-    print(f"{'Backend':<10} | {'Median':<10} | {'Mean':<10} | {'Std Dev':<10}")
-    print("-"*50)
+    print("\n" + "="*70)
+    print(f"{'Backend':<10} | {'Median Time':<12} | {'Median Mem':<12} | {'Max Mem':<10}")
+    print("-" * 70)
     
     for backend in ["torch", "mlx"]:
-        times = results[backend]
+        times = results[backend]["time"]
+        mems = results[backend]["mem"]
         if times:
-            median = np.median(times)
-            mean = np.mean(times)
-            std = np.std(times)
-            print(f"{backend:<10} | {median:<10.3f} | {mean:<10.3f} | {std:<10.3f}")
+            t_med = np.median(times)
+            m_med = np.median(mems)
+            m_max = np.max(mems)
+            print(f"{backend:<10} | {t_med:<12.3f} | {m_med:<12.1f} MB | {m_max:<10.1f} MB")
         else:
-            print(f"{backend:<10} | ERROR      | ERROR      | ERROR")
+            print(f"{backend:<10} | ERROR        | ERROR")
             
     if results["torch"] and results["mlx"]:
         m_torch = np.median(results["torch"])
