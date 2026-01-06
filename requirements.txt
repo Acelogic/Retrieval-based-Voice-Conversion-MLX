@@ -7,6 +7,9 @@ requests
 tqdm
 wget
 
+# MLX (Apple Silicon ML Framework)
+mlx; sys_platform == 'darwin'
+
 # Audio processing
 ffmpeg-python
 faiss-cpu==1.7.4
@@ -20,19 +23,18 @@ soxr
 
 # Machine learning and deep learning
 omegaconf; sys_platform == 'darwin'
-numba
+numba==0.60.0
 torch==2.4.0; sys_platform == 'darwin'
 torchaudio==2.4.0; sys_platform == 'darwin'
 torchvision==0.19.0; sys_platform == 'darwin'
-numba==0.60.0 # Pin to avoid numpy 2.0 conflicts if needed
-faiss-cpu
 
+# Transformers and model utilities
 einops
 transformers
 beautifulsoup4
 llvmlite
 
-# Visualization and UI
+# Visualization and benchmarking
 matplotlib
 tensorboard
 tensorboardX
@@ -42,5 +44,3 @@ certifi; sys_platform == 'darwin'
 antlr4-python3-runtime
 edge-tts
 webrtcvad
-mlx
-mlx; sys_platform == 'darwin'
