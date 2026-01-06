@@ -362,10 +362,17 @@ class Generator: Module {
         
         out = leakyRelu(out)
         out = conv_post(out)
-        print("DEBUG: Generator.conv_post out: [\(out.min().item(Float.self))...\(out.max().item(Float.self))]")
-        
+        print("DEBUG: Generator.conv_post out: [\(out.min().item(Float.self))...\(out.max().item(Float.self))], shape: \(out.shape)")
+
         out = tanh(out)
-        print("DEBUG: Generator.final (tanh): [\(out.min().item(Float.self))...\(out.max().item(Float.self))]")
+        print("DEBUG: Generator.after tanh: [\(out.min().item(Float.self))...\(out.max().item(Float.self))], shape: \(out.shape)")
+
+        // CRITICAL: Transpose from (B, C, T) to (B, T, C) to match Python MLX format
+        // Python returns (B, T, 1), MLX Swift Conv1d outputs (B, 1, T)
+        // Reference: generators.py line 269-271
+        out = out.transposed(0, 2, 1)  // (B, 1, T) -> (B, T, 1)
+        print("DEBUG: Generator.final output: shape \(out.shape)")
+
         return out
     }
 }
