@@ -117,12 +117,7 @@ class TextEncoder(nn.Module):
         self.proj = nn.Conv1d(hidden_channels, out_channels * 2, 1)
 
     def __call__(self, phone, pitch, lengths):
-        # phone: (B, L, EmbDim)? Or (B, L) indices?
-        # Typically phone is indices? No, VITS uses one-hot or embeddings. 
-        # Check source: emb_phone is Linear(embedding_dim, ...). So phone is (B, L, Dim).
-        # But wait, original code: self.emb_phone(phone).
-        # Usually phone is indices if Embedding used. But here is Linear.
-        # So phone input must be (B, L, D).
+        # phone: (B, L, D) - phone embeddings from HuBERT
         
         x = self.emb_phone(phone)
         if pitch is not None and self.emb_pitch is not None:

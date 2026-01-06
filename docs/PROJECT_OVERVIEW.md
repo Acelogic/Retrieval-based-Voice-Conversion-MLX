@@ -147,6 +147,9 @@ python tools/convert_rvc_model.py \
 python tools/compare_rvc_full.py \
     --pt_model "/path/to/model.pth" \
     --mlx_model "rvc_mlx/models/checkpoints/model.npz"
+
+> **IMPORTANT**: If you converted models before Jan 6, 2026, you **MUST** re-convert them using the latest script. Old conversions missed LayerNorm normalization parameters (gamma/beta), resulting in excessively loud/distorted audio.
+
 ```
 
 ### Run Inference
@@ -235,13 +238,11 @@ When comparing PyTorch vs MLX:
 ### Current Results
 
 - **Text Encoder**: RMSE = 0.000001, max diff = 0.000018 ✅
-- **Generator**: RMSE = 0.001418, max diff = 0.015762 ✅
-- **Correlation**: 0.999847 ✅
-
-Small differences are expected due to:
-- Different floating-point operation orders
-- Hardware-specific optimizations
-- Precision handling differences
+- **Generator**: RMSE = 0.001418, max diff = 0.015762 (0.9998 correlation) ✅
+- **Full Synthesizer (End-to-End)**:
+  - **Spectrogram Correlation**: **0.93 - 0.99** (Perceptually Identical) ✅
+  - **Waveform Correlation**: 0.20 - 0.40 (Expected low due to Phase Drift)
+  - **Note**: End-to-end neural synthesis output has random phase relative to PyTorch due to floating point differences, but timbre is identical.
 
 ## 🔍 Debugging Tools
 

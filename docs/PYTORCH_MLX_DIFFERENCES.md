@@ -53,10 +53,13 @@ This document outlines the key differences between PyTorch and MLX that were cri
 
 ### LayerNorm Parameters
 **PyTorch (newer):** `.weight` and `.bias`
-**PyTorch (older):** `.gamma` and `.beta`
+**PyTorch (older/custom):** `.gamma` and `.beta` (Often used in RVC)
 **MLX:** `.weight` and `.bias`
 
-**Conversion:** Map `.gamma` → `.weight` and `.beta` → `.bias`
+**Conversion:** 
+- Map `.gamma` → `.weight` (CRITICAL: failure to do this defaults weight to 1.0, causing scale explosion)
+- Map `.beta` → `.bias`
+
 
 ## 3. Weight Normalization
 
@@ -73,7 +76,6 @@ torch.nn.utils.weight_norm(layer)
 # Must fuse during conversion: w = g * (v / ||v||)
 ```
 
-**Conversion Logic:**
 ```python
 if "weight_g" in params and "weight_v" in params:
     v = params["weight_v"]
@@ -89,6 +91,9 @@ if "weight_g" in params and "weight_v" in params:
 
     final_weight = v * (g / (norm_v + 1e-8))
 ```
+
+**Note:** For `Conv1d`, verify if `weight_v` is already transposed in your checkpoint. If so, adjust axis.
+
 
 ## 4. Padding API
 
@@ -307,7 +312,40 @@ x = x.half()
 x = x.astype(mx.float16)
 ```
 
-## Summary Table
+## 16. ResidualCouplingBlock Structure / Flow Layers
+316: 
+317: ### PyTorch
+318: The `ResidualCouplingBlock` typically contains a `ModuleList` of flows. Critically, some implementations interleave `Flip()` modules (which have no weights) with `ResidualCouplingLayer` modules.
+319: 
+320: ```python
+321: self.flows = nn.ModuleList()
+322: for _ in range(n_flows):
+323:     self.flows.append(ResidualCouplingLayer(...)) # Index 0, 2, 4...
+324:     self.flows.append(Flip())                     # Index 1, 3, 5...
+325: ```
+326: 
+327: ### MLX
+328: We typically implement only the `ResidualCouplingLayer`s in a list, or handle Flip implicitly.
+329: 
+330: ```python
+331: self.flows = [ResidualCouplingLayer(...) for _ in range(n_flows)]
+332: ```
+333: 
+334: **Conversion Trap:**
+335: If you blindly map `flow.flows.0` -> `flow_0`, `flow.flows.2` -> `flow_2`, you will skip indices 0, 1, 2... in your MLX list if it's dense.
+336: 
+337: **Correct Logic:**
+338: ```python
+339: # PyTorch Index: 0 (Layer), 1 (Flip), 2 (Layer), 3 (Flip)
+340: # MLX Index:     0 (Layer),            1 (Layer)
+341: 
+342: if key.startswith("flow.flows."):
+343:     pt_idx = int(key.split(".")[2])
+344:     mlx_idx = pt_idx // 2  # Skip Flip
+345:     new_key = f"flow.flow_{mlx_idx}..."
+346: ```
+347: 
+348: ## Summary Table
 
 | Feature | PyTorch | MLX |
 |---------|---------|-----|
@@ -321,6 +359,7 @@ x = x.astype(mx.float16)
 | Gradient mode | `torch.no_grad()` | No gradients by default |
 | Weight norm | Built-in | Must fuse manually |
 | Module loading | `load_state_dict()` | `load_weights()` |
+| Flow Indices | `0, 1, 2, 3` (Layer, Flip...) | `0, 1` (Layer, Layer...) |
 
 ## Best Practices for Porting
 
