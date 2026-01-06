@@ -276,7 +276,7 @@ class PipelineMLXPure(PipelineMLX):
         # Check `rvc/lib/mlx/hubert.py`: `__call__` returns `proj`.
         # `proj` shape: (1, L, C).
         feats = self.hubert_model(audio_mx)
-        
+
         # Interpolate feats
         # feats = F.interpolate(feats.permute(0, 2, 1), scale_factor=2).permute(0, 2, 1)
         # MLX Interpolate?
@@ -310,7 +310,7 @@ class PipelineMLXPure(PipelineMLX):
         pitch_mx = mx.array(pitch) if pitch is not None else None
         pitchf_mx = mx.array(pitchf) if pitchf is not None else None
         sid_mx = mx.array(sid)
-        
+
         out_audio, _, _ = self.mlx_model.infer(
              feats,
              mx.array([p_len]),
