@@ -9,6 +9,9 @@ struct ContentView: View {
     @State private var statusMessage: String = "Ready"
     @State private var isProcessing: Bool = false
     @State private var isImporting: Bool = false
+    @State private var logs: [String] = []
+    
+    @State private var isModelLoaded: Bool = false
     
     @StateObject private var inferenceEngine = RVCInference()
     @StateObject private var audioRecorder = AudioRecorder()
@@ -133,11 +136,11 @@ struct ContentView: View {
                 .font(.headline)
                 .frame(maxWidth: .infinity)
                 .padding()
-                .background(isProcessing ? Color.gray : Color.green)
+                .background(isProcessing || !isModelLoaded ? Color.gray : Color.green)
                 .foregroundColor(.white)
                 .cornerRadius(12)
             }
-            .disabled(isProcessing || inputURL == nil)
+            .disabled(isProcessing || inputURL == nil || !isModelLoaded)
             
             // Play Converted
             if let url = outputURL, !isProcessing {
@@ -182,7 +185,7 @@ struct ContentView: View {
         .padding()
         .onChange(of: inferenceEngine.status) { oldValue, newValue in
              statusMessage = newValue 
-             if newValue == "Done!" || newValue.starts(with: "Error") {
+             if newValue == "Done!" || newValue == "Models Loaded" || newValue.starts(with: "Error") {
                  isProcessing = false
              } else if newValue != "Idle" {
                  isProcessing = true
@@ -218,34 +221,89 @@ struct ContentView: View {
                 statusMessage = "Error: \(error.localizedDescription)"
             }
         }
+        .onAppear {
+            inferenceEngine.onLog = { msg in
+                self.log(msg)
+            }
+            loadModel(name: "Coder")
+        }
+    }
+    
+    func log(_ message: String) {
+        print("DEBUG: \(message)") // Keep in console
+        DispatchQueue.main.async {
+            self.logs.append(message)
+        }
     }
     
     func loadModel(name: String) {
+        log("loadModel called for \(name)")
         selectedModel = name
-        // map name to file
-        let filename = name.lowercased() 
-        // Coder -> coder.npz
-        // Slim Shady -> placeholder?
+        isModelLoaded = false // Reset state
         
-        guard let url = RVCInference.bundle.url(forResource: filename, withExtension: "safetensors") else {
+        // map name to file
+        let filename = name.lowercased().replacingOccurrences(of: " ", with: "_")
+        
+        // Try finding in root or Assets subdir
+        let modelUrl = RVCInference.bundle.url(forResource: filename, withExtension: "safetensors") 
+            ?? RVCInference.bundle.url(forResource: filename, withExtension: "safetensors", subdirectory: "Assets")
+            
+        guard let url = modelUrl else {
+             log("Failed to find model file: \(filename).safetensors")
              statusMessage = "Model \(name) not found in bundle"
              return
         }
+        log("Found model at \(url.path)")
         
-        let hubertURL = RVCInference.bundle.url(forResource: "hubert_mlx", withExtension: "safetensors")
+        let hubertUrl = RVCInference.bundle.url(forResource: "hubert_base", withExtension: "safetensors")
+            ?? RVCInference.bundle.url(forResource: "hubert_base", withExtension: "safetensors", subdirectory: "Assets")
+            
+        guard let hubertURL = hubertUrl else {
+             log("Failed to find hubert_base.safetensors")
+             statusMessage = "Hubert model not found!"
+             return
+        }
+        log("Found hubert at \(hubertURL.path)")
+        
+        // Optional RMVPE
+        let rmvpeURL = RVCInference.bundle.url(forResource: "rmvpe", withExtension: "safetensors")
+            ?? RVCInference.bundle.url(forResource: "rmvpe", withExtension: "safetensors", subdirectory: "Assets")
+            ?? RVCInference.bundle.url(forResource: "rmvpe", withExtension: "npz")
+            ?? RVCInference.bundle.url(forResource: "rmvpe", withExtension: "npz", subdirectory: "Assets")
+            ?? RVCInference.bundle.url(forResource: "rmvpe_mlx", withExtension: "npz")
+            ?? RVCInference.bundle.url(forResource: "rmvpe_mlx", withExtension: "npz", subdirectory: "Assets")
+        
+        if let r = rmvpeURL {
+            log("Found rmvpe at \(r.path)")
+        } else {
+            log("RMVPE not found (optional)")
+        }
         
         Task {
             do {
-                try inferenceEngine.loadWeights(url: url, hubertURL: hubertURL)
+                log("Starting loadWeights task...")
+                try await inferenceEngine.loadWeights(hubertURL: hubertURL, modelURL: url, rmvpeURL: rmvpeURL)
+                log("loadWeights success")
                 statusMessage = "Loaded \(name)"
+                isModelLoaded = true
             } catch {
+                log("loadWeights failed: \(error)")
                 statusMessage = "Failed to load \(name): \(error.localizedDescription)"
+                isModelLoaded = false
             }
         }
     }
     
     func startInference() async {
         guard let input = inputURL else { return }
+        
+        if selectedModel == "Select Model" {
+            statusMessage = "Please select a model first."
+            log("Attempted inference without selecting model")
+            return
+        }
+        
+        log("Starting inference processing...")
         isProcessing = true
         
         // Temp output
@@ -253,6 +311,7 @@ struct ContentView: View {
         self.outputURL = output
         
         await inferenceEngine.infer(audioURL: input, outputURL: output)
+        log("Inference complete.")
     }
 }
 

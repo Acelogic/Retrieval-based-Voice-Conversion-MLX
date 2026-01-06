@@ -102,9 +102,11 @@ Currently, float16 caused a slowdown because of constant casting between float32
 
 ### Current Status
 - **Objective**: Successfully compile `RVCNative` for physical iOS device.
-- **Note**: Simulator support is NOT a priority due to lack of Metal GPU access in the simulator environment. Testing will be performed natively.
-- **Resolved**: `nullptr` crashes in `std::string` constructors (via `device.cpp`, `metal.cpp`, `resident.cpp` patches - now reverted to stock).
-- **Pending**: Verifying successful compilation with stock `mlx-swift` vendor files.
+- **Resolved**:
+    - **Compilation**: Successfully building with stock `mlx-swift` submodules.
+    - **Channel Mismatch**: Fixed `HubertModel` to return 768-dim features and removed incorrect transpose in `RVCInference.swift`.
+    - **Silent Audio**: Fixed by updating `AudioProcessor.swift` to save as **Int16 PCM** (was Float32).
+- **Pending**: Full end-to-end verification on a physical iOS Device.
 
 ### 5. Streaming Synthesis
 - [ ] Implement overlapping chunk processing for the Synthesizer to reduce peak memory usage and potentially enable real-time/streaming output.
@@ -121,11 +123,60 @@ Currently, float16 caused a slowdown because of constant casting between float32
 
 ## ⚠️ Known Issues
 
-### iOS Simulator Linker Errors
-When building the `RVCNative` demo for the iOS **Simulator**, you will likely see linker errors related to `SwiftUICore`, such as:
-> `ld: warning: Could not parse or use implicit file '.../SwiftUICore.framework/SwiftUICore.tbd': cannot link directly with 'SwiftUICore' because product being built is not an allowed client of it`
+### iOS Simulator Support & Limitations
+**Critical "Revelations" regarding Simulator use:**
+1.  **Stock Library Instability**: Using the *stock*, unmodified `mlx-swift` library on the simulator is highly unstable. The C++ backend frequently crashes with `nullptr` assertions in `std::string` constructors (e.g., in `device.cpp` or `metal.cpp`) because it tries to access Metal device properties that are invalid or null in the simulator environment.
+2.  **Force CPU**: While `MLX.Device.setDefault(device: Device.cpu)` *can* bypass some Metal crashes, the stock library's internal initialization sequences still often trigger the `nullptr` issues described above.
+3.  **Conclusion**: **Physical Device testing is mandatory.** The Simulator should only be used for basic UI layout checks or initial compilation verification. Any functional testing of the MLX inference pipeline must be done on a real device to avoid "fighting" the simulator's lack of proper Metal support and the stock library's fragility in that environment.
 
-**This is EXPECTED behavior on the Simulator and can generate "Build Failed" messages in Xcode logs, but the app often still launches.**
+### iOS Audio Inference - Scrambled Output (2026-01-05)
 
-*   **Resolution**: Ignore these errors **IF** you are just verifying logic.
-*   **Best Practice**: Always build and test on a **Physical Device** (iPhone/iPad) where these errors do NOT occur and `mlx-swift` performs correctly. The Simulator release of `mlx-swift` has known limitations.
+**Status**: 🔴 UNRESOLVED - Audio output remains distorted/scrambled on physical device.
+
+**Root Cause Identified**: The Swift implementation was missing critical components:
+1. **Missing TextEncoder (`enc_p`)**: Swift Generator expected 768-dim input, but model weights expect 192-dim (transformed by `enc_p.emb_phone`)
+2. **Missing Flow Module**: Voice conversion requires `ResidualCouplingBlock` for proper feature transformation
+
+**Weight Format Issues Discovered**:
+
+| Weight Type | Format in Safetensors | Notes |
+|-------------|----------------------|-------|
+| `flow.*` | PyTorch (out, in, kernel) | Needs transpose to MLX (out, kernel, in) |
+| `dec.cond`, `dec.ups`, `dec.noise_convs` | PyTorch | Needs transpose |
+| `enc_p.proj` | PyTorch | Needs transpose |
+| `enc_p.encoder.attn_*` | MLX | Already correct |
+| `enc_p.encoder.ffn_*` | MLX | Already correct |
+| `dec.conv_pre`, `dec.resblocks` | MLX | Already correct |
+
+**Auto-Detection Rule**: If `shape[2] < shape[1]` for 3D weight, transpose from PyTorch→MLX.
+
+**Flow Layer Indexing Issue**:
+- Model weights use indices `0, 2, 4, 6` (Flip modules at odd indices)
+- Swift sequential creation uses `0, 1, 2, 3`
+- Requires key remapping during loading
+
+**Attempted Fixes (All Still Producing Scrambled Audio)**:
+1. ✅ Feature upsampling interpolation (broadcast → linear interp)
+2. ✅ Voiced mask axis fix in SineGenerator (axis 2 → axis 1)
+3. ✅ Full Synthesizer implementation (TextEncoder, Flow, Generator)
+4. ✅ Conv1d weight auto-transposition based on shape
+5. ✅ Flow layer key remapping (0,2,4,6 → 0,1,2,3)
+6. ✅ Simplified pipeline (just Linear projection + Generator)
+
+**Recommended Debugging Approach**:
+1. **Verify Python MLX first**: Run CLI inference to confirm Python implementation works
+2. **Tensor comparison**: Save intermediate tensors (HuBERT output, F0, etc.) from both Python and Swift, compare at each stage
+3. **Isolate component**: Test each component (HuBERT, F0, Generator) independently
+4. **Check weight loading**: Print loaded weight shapes vs expected shapes to verify mapping
+
+**Key Files Modified**:
+- `RVCInference.swift` - Main inference orchestration  
+- `RVCModel.swift` - Generator with Conv1d/ConvTranspose1d
+- `Synthesizer.swift` - Full TextEncoder, Flow, ResidualCouplingBlock (created but unused)
+
+**Possible Remaining Issues**:
+- HuBERT output format differences (transposition?)
+- F0 scaling or format mismatch
+- Subtle differences in Conv1d padding between Python MLX and Swift MLX
+- Weight loading not matching expected module hierarchy
+
