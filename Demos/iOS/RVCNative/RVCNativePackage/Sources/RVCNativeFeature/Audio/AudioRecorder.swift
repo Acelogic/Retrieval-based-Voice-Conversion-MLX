@@ -1,3 +1,4 @@
+#if os(iOS)
 import Foundation
 import AVFoundation
 
@@ -67,3 +68,4 @@ public class AudioRecorder: ObservableObject {
         audioRecorder = nil
     }
 }
+#endif

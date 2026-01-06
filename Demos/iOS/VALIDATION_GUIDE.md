@@ -166,13 +166,24 @@ Cents Error = 1200 * log2(f0_iOS / f0_Python)
    - Test data generated ✅
    - Swift validation script (framework) ✅
 
-### ⏳ In Progress
+### ✅ Completed (Framework Ready)
 
-4. **Phase 3.1:** Component validation
-   - Load .safetensors in Swift validation script
-   - Run HuBERT and compare outputs
-   - Run RMVPE and compare outputs
-   - Document correlation metrics
+4. **Phase 3.1:** Component validation framework
+   - ✅ Swift test suite created (`Tests/RVCNativeFeatureTests/MLXParityTests.swift`)
+   - ✅ Numpy .npy file loader implemented
+   - ✅ Correlation metrics (Pearson, RMSE, MAE, F0 cents error)
+   - ✅ HuBERT validation test with model loading
+   - ✅ RMVPE validation test with model loading
+   - ✅ Test data summary and diagnostics
+
+**Note:** Tests require iOS simulator/device with Metal support
+
+### ⏳ To Run
+
+4. **Phase 3.1:** Execute validation tests
+   - Tests are ready but require proper Metal environment
+   - Run from Xcode on iOS simulator (not `swift test`)
+   - See instructions below
 
 5. **Phase 3.2:** End-to-end validation
    - Full pipeline test
@@ -181,17 +192,61 @@ Cents Error = 1200 * log2(f0_iOS / f0_Python)
 
 ---
 
+## Running the Validation Tests
+
+### Method 1: Xcode (Recommended)
+
+1. Open `Demos/iOS/RVCNative/RVCNative.xcworkspace` in Xcode
+2. Select an iOS Simulator (iPhone 16, etc.)
+3. Press `Cmd+U` to run all tests
+4. Or use Test Navigator (`Cmd+6`) to run specific tests
+
+The tests will automatically:
+- Load Python reference outputs from `ios_test_data/`
+- Load iOS models from the Assets directory
+- Run HuBERT and RMVPE inference
+- Compute correlation metrics
+- Report PASS/FAIL based on thresholds
+
+### Method 2: Command Line (Limited)
+
+```bash
+# This will fail with Metal initialization error on macOS
+cd Demos/iOS/RVCNative/RVCNativePackage
+swift test
+
+# To run on iOS simulator from command line, use xcodebuild:
+cd Demos/iOS/RVCNative
+xcodebuild test \
+  -workspace RVCNative.xcworkspace \
+  -scheme RVCNative \
+  -destination 'platform=iOS Simulator,name=iPhone 16'
+```
+
+**Important:** The tests require Metal GPU support and will fail if run via `swift test` on macOS due to Metal library initialization issues. Always run from Xcode or use xcodebuild with an iOS simulator.
+
 ## Implementation Notes
 
 ### Loading .safetensors in Swift
 
-The Swift/MLX library supports loading safetensors:
+The validation tests demonstrate the complete pattern:
 
 ```swift
 import MLX
+import MLXNN
 
-let weights = MLX.loadArrays(url: modelURL)
+// Load weights
+let weights = try MLX.loadArrays(url: modelURL)
 // Returns [String: MLXArray] dictionary
+
+// Create model
+let model = HubertModel(config: HubertConfig())
+
+// Apply weights
+model.update(parameters: ModuleParameters.unflattened(weights))
+
+// Run inference
+let output = model(input)
 ```
 
 ### Model Paths

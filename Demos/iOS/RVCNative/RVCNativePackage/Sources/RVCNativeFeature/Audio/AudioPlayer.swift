@@ -1,3 +1,4 @@
+#if os(iOS)
 import Foundation
 import AVFoundation
 import SwiftUI
@@ -40,3 +41,4 @@ public class AudioPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
         }
     }
 }
+#endif
