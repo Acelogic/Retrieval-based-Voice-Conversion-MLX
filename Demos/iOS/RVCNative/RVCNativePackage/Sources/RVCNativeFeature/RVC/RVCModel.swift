@@ -309,8 +309,14 @@ class Generator: Module {
     }
     
     func callAsFunction(_ x: MLXArray, f0: MLXArray, g: MLXArray? = nil) -> MLXArray {
-        var out = conv_pre(x)
-        print("DEBUG: Generator.conv_pre out: [\(out.min().item(Float.self))...\(out.max().item(Float.self))]")
+        // CRITICAL: MLX uses channels-last format (B, T, C)
+        // Input x is in PyTorch format (B, C, T), transpose to MLX format
+        // Python line 222-223: x = x.transpose(0, 2, 1)
+        var out = x.transposed(0, 2, 1)  // (B, C, T) -> (B, T, C)
+        print("DEBUG: Generator input transposed: \(out.shape)")
+
+        out = conv_pre(out)
+        print("DEBUG: Generator.conv_pre out: \(out.shape), [\(out.min().item(Float.self))...\(out.max().item(Float.self))]")
         
         // Add speaker conditioning if available
         if let g = g, let condLayer = cond {
@@ -362,17 +368,14 @@ class Generator: Module {
         
         out = leakyRelu(out)
         out = conv_post(out)
-        print("DEBUG: Generator.conv_post out: [\(out.min().item(Float.self))...\(out.max().item(Float.self))], shape: \(out.shape)")
+        print("DEBUG: Generator.conv_post out: \(out.shape), [\(out.min().item(Float.self))...\(out.max().item(Float.self))]")
 
         out = tanh(out)
-        print("DEBUG: Generator.after tanh: [\(out.min().item(Float.self))...\(out.max().item(Float.self))], shape: \(out.shape)")
+        print("DEBUG: Generator.final output: \(out.shape), [\(out.min().item(Float.self))...\(out.max().item(Float.self))]")
 
-        // CRITICAL: Transpose from (B, C, T) to (B, T, C) to match Python MLX format
-        // Python returns (B, T, 1), MLX Swift Conv1d outputs (B, 1, T)
-        // Reference: generators.py line 269-271
-        out = out.transposed(0, 2, 1)  // (B, 1, T) -> (B, T, 1)
-        print("DEBUG: Generator.final output: shape \(out.shape)")
-
+        // Output is already (B, T, 1) since we're operating in channels-last format
+        // Python line 269-271: conv_post reduces to 1 channel, returns (B, T, 1)
+        // No transpose needed - MLX Swift Conv1d outputs (B, T, C) format
         return out
     }
 }
