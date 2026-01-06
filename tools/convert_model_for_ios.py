@@ -8,23 +8,27 @@ import argparse
 import sys
 import os
 import mlx.core as mx
+
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from rvc.lib.mlx.convert import convert_weights
 
+
 def main():
-    parser = argparse.ArgumentParser(description="Convert RVC PyTorch model to MLX-compatible safetensors for iOS.")
+    parser = argparse.ArgumentParser(
+        description="Convert RVC PyTorch model to MLX-compatible safetensors for iOS."
+    )
     parser.add_argument("input_model", help="Path to input .pth model file")
     parser.add_argument("output_path", help="Path to output .safetensors file")
-    
+
     args = parser.parse_args()
-    
+
     input_path = args.input_model
     output_path = args.output_path
 
     if not os.path.exists(input_path):
         print(f"Error: Input file not found: {input_path}")
         sys.exit(1)
-        
+
     # Create output directory if needed
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
 
@@ -49,6 +53,7 @@ def main():
     mx.save_safetensors(output_path, mlx_weights)
 
     print("✅ Conversion complete!")
+
 
 if __name__ == "__main__":
     main()

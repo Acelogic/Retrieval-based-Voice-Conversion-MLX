@@ -12,6 +12,7 @@ import os
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(__file__))
 
+
 def test_chunking_logic():
     """Test chunking logic with a mock model."""
     print("=" * 60)
@@ -51,7 +52,7 @@ def test_chunking_logic():
         # Simulate the mel2hidden logic
         # 1. Pad to multiple of 32
         pad_curr = 32 * ((n_frames - 1) // 32 + 1) - n_frames
-        mel_padded = np.pad(mel, ((0, 0), (0, pad_curr)), mode='reflect')
+        mel_padded = np.pad(mel, ((0, 0), (0, pad_curr)), mode="reflect")
 
         # 2. Convert and reshape
         mel_mx = mx.array(mel_padded)
@@ -79,7 +80,9 @@ def test_chunking_logic():
 
                 # Verify chunk alignment
                 if chunk_frames % 32 != 0:
-                    print(f"    ❌ ERROR: Chunk {num_chunks} has {chunk_frames} frames (not divisible by 32)")
+                    print(
+                        f"    ❌ ERROR: Chunk {num_chunks} has {chunk_frames} frames (not divisible by 32)"
+                    )
                     all_passed = False
                     break
 
@@ -96,7 +99,9 @@ def test_chunking_logic():
                 # Verify shapes match
                 if hidden_single.shape != hidden_chunked.shape:
                     print(f"    ❌ FAILED: Shape mismatch!")
-                    print(f"       Single: {hidden_single.shape}, Chunked: {hidden_chunked.shape}")
+                    print(
+                        f"       Single: {hidden_single.shape}, Chunked: {hidden_chunked.shape}"
+                    )
                     all_passed = False
                 else:
                     # Verify values match (they should with our mock model)
@@ -107,7 +112,9 @@ def test_chunking_logic():
                         print(f"    ✅ PASSED: Chunking preserves output")
                     else:
                         max_diff = np.max(np.abs(hidden_single_np - hidden_chunked_np))
-                        print(f"    ❌ FAILED: Outputs differ (max diff: {max_diff:.2e})")
+                        print(
+                            f"    ❌ FAILED: Outputs differ (max diff: {max_diff:.2e})"
+                        )
                         all_passed = False
         else:
             print(f"  Skipping chunked test (short audio)")
@@ -132,6 +139,7 @@ def test_chunking_logic():
 
     return all_passed
 
+
 def test_edge_cases():
     """Test edge cases."""
     print("\n" + "=" * 60)
@@ -140,12 +148,12 @@ def test_edge_cases():
 
     # Test various chunk sizes
     test_cases = [
-        (1000, 32000),    # Very short
-        (31999, 32000),   # Just under chunk
-        (32000, 32000),   # Exactly chunk
-        (32001, 32000),   # Just over chunk
-        (64000, 32000),   # Exactly 2x chunk
-        (64032, 32000),   # 2x chunk + 32
+        (1000, 32000),  # Very short
+        (31999, 32000),  # Just under chunk
+        (32000, 32000),  # Exactly chunk
+        (32001, 32000),  # Just over chunk
+        (64000, 32000),  # Exactly 2x chunk
+        (64032, 32000),  # 2x chunk + 32
         (100000, 32000),  # Long audio
     ]
 
@@ -166,7 +174,10 @@ def test_edge_cases():
         last_chunk_start = (n_chunks - 1) * chunk_size
         last_chunk_size = pad_frames - last_chunk_start
 
-        print(f"\nFrames: {n_frames:6d}, Padded: {pad_frames:6d}, Chunks: {n_chunks}, Last chunk: {last_chunk_size:6d}", end="")
+        print(
+            f"\nFrames: {n_frames:6d}, Padded: {pad_frames:6d}, Chunks: {n_chunks}, Last chunk: {last_chunk_size:6d}",
+            end="",
+        )
 
         # Verify last chunk is divisible by 32
         if last_chunk_size % 32 != 0:
@@ -183,6 +194,7 @@ def test_edge_cases():
     print("=" * 60)
 
     return all_passed
+
 
 if __name__ == "__main__":
     print("\nRMVPE Chunking Logic Validation")

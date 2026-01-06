@@ -1,6 +1,7 @@
 import torch
 import sys
 
+
 def list_keys(pth_path):
     try:
         cpt = torch.load(pth_path, map_location="cpu")
@@ -11,6 +12,7 @@ def list_keys(pth_path):
                 print(f"{k}: {weights[k].shape}")
     except Exception as e:
         print(f"Error: {e}")
+
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:

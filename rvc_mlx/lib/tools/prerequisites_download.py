@@ -5,7 +5,9 @@ import requests
 
 url_base = "https://huggingface.co/IAHispano/Applio/resolve/main/Resources"
 
-print("Note: This script downloads original PyTorch models. For RVC-MLX, you must convert these to MLX format (safetensors/npz) using the provided tools.")
+print(
+    "Note: This script downloads original PyTorch models. For RVC-MLX, you must convert these to MLX format (safetensors/npz) using the provided tools."
+)
 
 pretraineds_hifigan_list = [
     (

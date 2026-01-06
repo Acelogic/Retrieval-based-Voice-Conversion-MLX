@@ -29,7 +29,7 @@ unet = DeepUnet(
     en_de_layers=5,
     inter_layers=4,
     in_channels=1,
-    en_out_channels=16
+    en_out_channels=16,
 )
 
 print("\n" + "─" * 80)
@@ -99,15 +99,20 @@ try:
     actual_channels = x.shape[-1]
 
     if actual_channels == expected_channels:
-        print(f"✅ SUCCESS! Output has {actual_channels} channels (expected {expected_channels})")
+        print(
+            f"✅ SUCCESS! Output has {actual_channels} channels (expected {expected_channels})"
+        )
     else:
-        print(f"❌ FAILED! Output has {actual_channels} channels (expected {expected_channels})")
+        print(
+            f"❌ FAILED! Output has {actual_channels} channels (expected {expected_channels})"
+        )
         print(f"\nChannel mismatch: {actual_channels} != {expected_channels}")
         print("This explains why CNN fails (expects 16 input channels)")
 
 except Exception as e:
     print(f"\n❌ ERROR during forward pass: {e}")
     import traceback
+
     traceback.print_exc()
 
 print("\n" + "=" * 80)

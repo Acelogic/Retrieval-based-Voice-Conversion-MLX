@@ -19,17 +19,19 @@ project_root = str(Path(__file__).resolve().parent.parent)
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
+
 def create_synthetic_audio(duration_seconds, sample_rate=16000):
     """Create synthetic audio for testing."""
     n_samples = int(duration_seconds * sample_rate)
     # Create audio with some frequency content (sine waves + noise)
     t = np.linspace(0, duration_seconds, n_samples)
     audio = (
-        0.3 * np.sin(2 * np.pi * 440 * t) +  # A4 note
-        0.2 * np.sin(2 * np.pi * 880 * t) +  # A5 note
-        0.1 * np.random.randn(n_samples)      # Noise
+        0.3 * np.sin(2 * np.pi * 440 * t)  # A4 note
+        + 0.2 * np.sin(2 * np.pi * 880 * t)  # A5 note
+        + 0.1 * np.random.randn(n_samples)  # Noise
     )
     return audio.astype(np.float32)
+
 
 def benchmark_torch_rmvpe(audio, warmup=True, num_runs=3):
     """Benchmark PyTorch RMVPE implementation."""
@@ -67,6 +69,7 @@ def benchmark_torch_rmvpe(audio, warmup=True, num_runs=3):
     except Exception as e:
         return None, str(e)
 
+
 def benchmark_mlx_rmvpe(audio, warmup=True, num_runs=3):
     """Benchmark MLX RMVPE implementation."""
     try:
@@ -101,6 +104,7 @@ def benchmark_mlx_rmvpe(audio, warmup=True, num_runs=3):
     except Exception as e:
         return None, str(e)
 
+
 def run_benchmark_suite(quick=False):
     """Run comprehensive benchmark suite."""
     print("=" * 80)
@@ -127,14 +131,16 @@ def run_benchmark_suite(quick=False):
         print("🚀 Running in QUICK mode (only Short and Medium tests)")
         test_configs = test_configs[:2]
 
-    print(f"{'Audio Length':<20} {'PyTorch (MPS)':<18} {'MLX (Apple)':<18} {'Speedup':<20}")
+    print(
+        f"{'Audio Length':<20} {'PyTorch (MPS)':<18} {'MLX (Apple)':<18} {'Speedup':<20}"
+    )
     print("=" * 80)
 
     results = []
 
     for test_config in test_configs:
-        duration = test_config['duration']
-        name = test_config['name']
+        duration = test_config["duration"]
+        name = test_config["name"]
 
         # Create synthetic audio
         audio = create_synthetic_audio(duration)
@@ -157,13 +163,15 @@ def run_benchmark_suite(quick=False):
                 slowdown = 1 / speedup
                 speedup_str = f"⚠️  {slowdown:.2f}x slower"
 
-            results.append({
-                'name': name,
-                'duration': duration,
-                'torch': torch_time,
-                'mlx': mlx_time,
-                'speedup': speedup
-            })
+            results.append(
+                {
+                    "name": name,
+                    "duration": duration,
+                    "torch": torch_time,
+                    "mlx": mlx_time,
+                    "speedup": speedup,
+                }
+            )
         else:
             speedup_str = "N/A"
 
@@ -176,14 +184,18 @@ def run_benchmark_suite(quick=False):
         print("Summary Statistics")
         print("=" * 80)
 
-        speedups = [r['speedup'] for r in results]
+        speedups = [r["speedup"] for r in results]
         avg_speedup = np.mean(speedups)
         min_speedup = np.min(speedups)
         max_speedup = np.max(speedups)
 
         print(f"  Average Speedup: {avg_speedup:.2f}x")
-        print(f"  Min Speedup:     {min_speedup:.2f}x ({[r['name'] for r in results if r['speedup'] == min_speedup][0]})")
-        print(f"  Max Speedup:     {max_speedup:.2f}x ({[r['name'] for r in results if r['speedup'] == max_speedup][0]})")
+        print(
+            f"  Min Speedup:     {min_speedup:.2f}x ({[r['name'] for r in results if r['speedup'] == min_speedup][0]})"
+        )
+        print(
+            f"  Max Speedup:     {max_speedup:.2f}x ({[r['name'] for r in results if r['speedup'] == max_speedup][0]})"
+        )
         print()
 
         if avg_speedup >= 1.0:
@@ -199,19 +211,21 @@ def run_benchmark_suite(quick=False):
         print()
 
         for result in results:
-            improvement = (result['speedup'] - 1) * 100
-            if result['speedup'] >= 1.0:
+            improvement = (result["speedup"] - 1) * 100
+            if result["speedup"] >= 1.0:
                 print(f"  {result['name']:<20} MLX is {improvement:>5.1f}% faster")
             else:
                 print(f"  {result['name']:<20} MLX is {-improvement:>5.1f}% slower")
 
         # Check if chunking helps more with longer audio
         if len(results) >= 2:
-            short_speedup = results[0]['speedup']
-            long_speedup = results[-1]['speedup']
+            short_speedup = results[0]["speedup"]
+            long_speedup = results[-1]["speedup"]
             if long_speedup > short_speedup:
                 diff = (long_speedup - short_speedup) * 100
-                print(f"\n  💡 Chunking optimization improves performance by {diff:.1f}% on longer audio")
+                print(
+                    f"\n  💡 Chunking optimization improves performance by {diff:.1f}% on longer audio"
+                )
 
     print()
     print("=" * 80)
@@ -219,12 +233,16 @@ def run_benchmark_suite(quick=False):
     print("      utilization and memory efficiency on long audio files.")
     print("=" * 80)
 
+
 def main():
     parser = argparse.ArgumentParser(description="Benchmark RMVPE implementations")
-    parser.add_argument('--quick', action='store_true', help='Run quick benchmark (shorter tests)')
+    parser.add_argument(
+        "--quick", action="store_true", help="Run quick benchmark (shorter tests)"
+    )
     args = parser.parse_args()
 
     run_benchmark_suite(quick=args.quick)
+
 
 if __name__ == "__main__":
     main()

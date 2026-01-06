@@ -1,5 +1,6 @@
 import numpy as np
 
+
 def circular_write(new_data, target):
     """
     Circular write for numpy arrays.

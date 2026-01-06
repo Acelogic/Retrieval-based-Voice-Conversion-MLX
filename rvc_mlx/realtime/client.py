@@ -25,10 +25,10 @@ async def websocket_audio(ws: WebSocket):
 
         read_chunk_size = int(params["chunk_size"])
         block_frame = read_chunk_size * 128
-        
+
         # Audio is 16k usually? But block_frame calc based on 128?
         # Typically hubert window.
-        
+
         print("Starting Realtime...")
 
         if vc_instance is None:

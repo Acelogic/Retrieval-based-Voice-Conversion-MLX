@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from rvc.lib.mlx.rmvpe import RMVPE0Predictor
 
+
 def test_chunking_equivalence():
     """Test that chunked processing produces identical results to single-pass."""
     print("=" * 60)
@@ -21,7 +22,9 @@ def test_chunking_equivalence():
     print("=" * 60)
 
     # Model path
-    model_path = "/Users/mcruz/Library/Application Support/Replay/com.replay.Replay/models"
+    model_path = (
+        "/Users/mcruz/Library/Application Support/Replay/com.replay.Replay/models"
+    )
     weights_path = os.path.join(model_path, "rmvpe.mlx.safetensors")
 
     if not os.path.exists(weights_path):
@@ -77,7 +80,9 @@ def test_chunking_equivalence():
         hidden_chunked_np = np.array(hidden_chunked)
 
         # Check equivalence
-        are_equal = np.allclose(hidden_single_np, hidden_chunked_np, rtol=1e-5, atol=1e-6)
+        are_equal = np.allclose(
+            hidden_single_np, hidden_chunked_np, rtol=1e-5, atol=1e-6
+        )
 
         if are_equal:
             # Calculate statistics
@@ -107,13 +112,16 @@ def test_chunking_equivalence():
 
     return all_passed
 
+
 def test_edge_cases():
     """Test edge cases and special scenarios."""
     print("\n" + "=" * 60)
     print("RMVPE Edge Cases Test")
     print("=" * 60)
 
-    model_path = "/Users/mcruz/Library/Application Support/Replay/com.replay.Replay/models"
+    model_path = (
+        "/Users/mcruz/Library/Application Support/Replay/com.replay.Replay/models"
+    )
     weights_path = os.path.join(model_path, "rmvpe.mlx.safetensors")
 
     if not os.path.exists(weights_path):
@@ -151,6 +159,7 @@ def test_edge_cases():
     print("=" * 60)
 
     return all_passed
+
 
 if __name__ == "__main__":
     # Set environment variable for faiss

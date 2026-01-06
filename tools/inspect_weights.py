@@ -1,5 +1,5 @@
 import torch
-import sys
+
 
 def inspect(model_path):
     print(f"Inspecting {model_path}...")
@@ -29,16 +29,17 @@ def inspect(model_path):
                 print(f"Key: {prefix}")
                 print(f"  weight_v: {w_v.shape}")
                 print(f"  weight_g: {v.shape}")
-                
+
                 # Input Ch = Dim 0 for weight_v: (In, Out, K)
-                # Output Ch = Dim 1 
-                
+                # Output Ch = Dim 1
+
                 if v.shape[0] == w_v.shape[0]:
                     print("  Matches Dim 0 (In)")
                 elif v.shape[0] == w_v.shape[1]:
                     print("  Matches Dim 1 (Out)")
                 else:
                     print("  Matches NEITHER!")
+
 
 if __name__ == "__main__":
     inspect("rvc/models/pretraineds/hifi-gan/f0G40k.pth")
