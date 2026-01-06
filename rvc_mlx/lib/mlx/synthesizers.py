@@ -103,9 +103,6 @@ class Synthesizer(nn.Module):
         
         # Rate / time stretching
         if rate is not None:
-             # Logic from original:
-             # head = int(z_p.shape[2] * (1.0 - rate.item())) -> shape[2] is length in orig (B, C, L)
-             # Here shape[1] is length (B, L, C)
              head = int(z_p.shape[1] * (1.0 - rate.item()))
              z_p = z_p[:, head:, :]
              x_mask = x_mask[:, head:]
@@ -113,13 +110,9 @@ class Synthesizer(nn.Module):
                  nsff0 = nsff0[:, head:]
                  
         # Flow reverse
-        # z = self.flow(z_p, x_mask, g=g, reverse=True)
-        # Mask needs to be (B, L, 1) for flow
         z = self.flow(z_p, x_mask[:, :, None], g=g, reverse=True)
         
         # Decoder
-        # o = self.dec(z * x_mask, nsff0, g=g)
-        # z: (B, L, C)
         o = self.dec(z * x_mask[:, :, None], nsff0, g=g)
         
         return o, x_mask, (z, z_p, m_p, logs_p)

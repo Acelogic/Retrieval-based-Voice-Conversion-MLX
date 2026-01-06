@@ -5,69 +5,6 @@ import mlx.nn as nn
 from rvc_mlx.lib.mlx.modules import WaveNet
 from rvc_mlx.lib.mlx.residuals import ResBlock, LRELU_SLOPE
 
-class ConvTranspose1d(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, bias=True):
-        super().__init__()
-        self.conv = nn.Conv1d(in_channels, out_channels, kernel_size, stride=1, bias=bias)
-        self.stride = stride
-        self.padding = padding
-        self.kernel_size = kernel_size
-
-
-    def __call__(self, x):
-        # x: (N, L, C)
-        N, L, C = x.shape
-        
-        # Upsample by inserting zeros (dilating input)
-        # Output length should be L * stride
-        # We can implement this by creating a larger array and assigning strided slices
-        if self.stride > 1:
-            x_up = mx.zeros((N, L * self.stride, C), dtype=x.dtype)
-            x_up[:, ::self.stride, :] = x
-        else:
-            x_up = x
-            
-        # Convolve
-        # We need to handle padding to match PyTorch ConvTranspose1d
-        # PyTorch ConvTranspose1d(padding=p) crops the output by p on both sides.
-        # It essentially calculates output size: (L-1)*s + k - 2p
-        # Our Conv1d(padding=0) produces size: L_in - k + 1
-        # L_in = L*s
-        # Size = L*s - k + 1
-        
-        # We want size (L*s - s - 2p + k) approximately?
-        # Actually, let's look at relative padding.
-        # To get the same output, we might need to pad x_up.
-        
-        # Standard "Same" transposed conv (stride s, kernel k, padding p=(k-s)//2)
-        # Should result in L_out = L_in * s.
-        
-        # Current result: L*s - k + 1.
-        # Target: L*s.
-        # Diff: k - 1.
-        # So we need to PAD the input to Conv1d by (k-1)/2 on both sides (if possible) or equivalent.
-        # But wait, PyTorch `padding` argument in ConvTranspose1d REMOVES from the edges of the "full" convolution.
-        # Full convolution of dilated input with kernel k produces size L*s + k - 1.
-        # PyTorch result is L*s + k - 1 - 2*p.
-        
-        # Our Conv1d(padding=0) produces L*s - k + 1.
-        # This is equivalent to "valid" convolution.
-        # Valid conv cuts off k-1 size.
-        # Full conv adds k-1 size (via padding k-1).
-        
-        # So:
-        # Target: L*s + k - 1 - 2*p.
-        # Current: L*s - k + 1.
-        # Gap: (L*s + k - 1 - 2*p) - (L*s - k + 1) = 2k - 2 - 2p = 2(k - 1 - p).
-        # We need to add `k - 1 - p` padding to BOTH sides of Conv1d input.
-        
-        pad = self.kernel_size - 1 - self.padding
-
-        if pad > 0:
-            # Pad x_up
-            x_up = mx.pad(x_up, ((0,0), (pad, pad), (0,0)))
-        
-        return self.conv(x_up)
 
 class SineGenerator(nn.Module):
     def __init__(
@@ -210,6 +147,7 @@ class HiFiGANNSFGenerator(nn.Module):
         sr: int,
     ):
         super().__init__()
+        self.upsample_rates = upsample_rates
         self.num_kernels = len(resblock_kernel_sizes)
         self.num_upsamples = len(upsample_rates)
         self.m_source = SourceModuleHnNSF(sample_rate=sr, harmonic_num=0)
@@ -218,6 +156,7 @@ class HiFiGANNSFGenerator(nn.Module):
 
         self.ups = []
         self.noise_convs = []
+        self.output_paddings = []  # Store output_padding for manual application
         
         channels = []
         # Replicate channel calculation logic
@@ -233,17 +172,22 @@ class HiFiGANNSFGenerator(nn.Module):
              stride_f0s.append(stride)
 
         for i, (u, k) in enumerate(zip(upsample_rates, upsample_kernel_sizes)):
-            # Padding
+            # Padding - match PyTorch behavior for odd upsample rates
             if u % 2 == 0:
                 p = (k - u) // 2
             else:
                 p = u // 2 + u % 2
                 
-            # ConvTranspose1d args: in, out, kernel, stride, padding
             in_ch = upsample_initial_channel // (2**i)
             out_ch = channels[i]
             
-            self.ups.append(ConvTranspose1d(in_ch, out_ch, k, stride=u, padding=p))
+            # Store output_padding to apply manually (MLX doesn't support it natively)
+            self.output_paddings.append(u % 2)
+            
+            # Use native ConvTranspose1d (output_padding applied in forward)
+            self.ups.append(nn.ConvTranspose1d(
+                in_ch, out_ch, k, stride=u, padding=p
+            ))
             
             stride = stride_f0s[i]
             kernel = 1 if stride == 1 else stride * 2 - stride % 2
@@ -271,23 +215,11 @@ class HiFiGANNSFGenerator(nn.Module):
         for i, l in enumerate(self.resblocks): setattr(self, f"resblock_{i}", l)
 
     def __call__(self, x, f0, g=None):
-        # x: (B, L, C) - wait. Model expects (B, C, L)?
-        # Our modules use MLX default (B, L, C). 
-        # Input `x` from encoder is (B, C, L)? Usually PyTorch is.
-        # Synthesizer `forward` calls `self.dec(z_slice, ...)`
-        # `z_slice` comes from `enc_q` or `flow`.
-        # WE NEED TO DECIDE CONVENTION.
-        # MLX Convs are (N, L, C).
-        # We should stick to MLX (N, L, C).
-        # So `x` should be (N, L, C).
-        
         har_source = self.m_source(f0, self.upp) 
-        # har_source: (B, L*U, 1) -> Conv1d expects (N, L, C). Correct.
         
         x = self.conv_pre(x)
         
         if g is not None:
-            # g: (B, 1, C)?
             x = x + self.cond(g)
 
         for i in range(self.num_upsamples):
@@ -297,15 +229,16 @@ class HiFiGANNSFGenerator(nn.Module):
             x = nn.leaky_relu(x, self.lrelu_slope)
             x = up(x)
             
-            # noise_conv operates on har_source (high res). Stride reduces it to match x.
-            # har_source: (B, T_high, 1)
-            # noise_conv output: (B, T_curr, C)
+            # Apply output_padding manually (MLX doesn't support it in ConvTranspose1d)
+            # output_padding adds to one side of the output to match PyTorch behavior
+            out_pad = self.output_paddings[i]
+            if out_pad > 0:
+                # Pad on the right side of the time dimension (dim 1 in NLC format)
+                x = mx.pad(x, [(0, 0), (0, out_pad), (0, 0)])
+            
             n = noise_conv(har_source)
             
-            # Shape check? Assume correct by stride math.
-            # Crop if mismatch due to padding?
             if x.shape[1] != n.shape[1]:
-                # Simple crop to min
                 min_len = min(x.shape[1], n.shape[1])
                 x = x[:, :min_len, :]
                 n = n[:, :min_len, :]
