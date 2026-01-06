@@ -461,15 +461,20 @@ class RMVPE: Module {
         let hidden = self(melInput) // [1, T, 360]
         
         // Decode
-        let f0 = self.decode(hidden, thred: thred) // [1, T, 1]
+        let f0 = self.decode(hidden, thred: thred) // [T, 1]
         
         // DEBUG Stats
         let f0_min = f0.min().item(Float.self)
         let f0_max = f0.max().item(Float.self)
         let f0_mean = f0.mean().item(Float.self)
-        print("DEBUG: RMVPE F0 Stats: min \(f0_min), max \(f0_max), mean \(f0_mean)")
-        
-        return f0
+        print("DEBUG: RMVPE F0 Stats: min \(f0_min), max \(f0_max), mean \(f0_mean), shape \(f0.shape)")
+
+        // CRITICAL: Add batch dimension to match RVCInference expectations
+        // decode() returns [T, 1], we need [1, T, 1] for the pipeline
+        let f0_batched = f0.expandedDimensions(axis: 0)  // [T, 1] -> [1, T, 1]
+        print("DEBUG: RMVPE F0 final shape: \(f0_batched.shape)")
+
+        return f0_batched
     }
 }
 
