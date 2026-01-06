@@ -371,15 +371,19 @@ class RMVPE: Module {
         // Manual argmax using argSort (ascending) and taking the last element
         let indices = MLX.argSort(hidden, axis: -1)
         let center = indices[.ellipsis, -1] // [N, T]
-        
+
         let cents = centMapping[center]
-        var f0 = 10 * MLX.pow(2.0, cents / 1200.0)
-        
+
+        // CORRECT F0 decoding formula (matches Python fix for audio parity)
+        // cents are relative to A4=440Hz (MIDI note 69, cent 4080)
+        // Formula: f0 = 440 * 2^((cents - 4080) / 1200)
+        var f0 = MLX.pow(2.0, (cents - 4080.0) / 1200.0) * 440.0
+
         // Thresholding
         let maxVal = max(hidden, axis: -1)
         let mask = maxVal .> thred
         f0 = f0 * mask.asType(f0.dtype)
-        
+
         return f0.expandedDimensions(axis: -1) // [N, T, 1]
     }
     
