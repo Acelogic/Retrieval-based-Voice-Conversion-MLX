@@ -17,6 +17,7 @@ project_root = str(Path(__file__).resolve().parent.parent)
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
+
 def test_hubert_dimension():
     """Test what dimension HuBERT actually outputs in Python MLX."""
     print("=" * 80)
@@ -69,7 +70,7 @@ def test_hubert_dimension():
             f0_autotune=False,
             split_audio=False,
             embedder_model="contentvec",
-            backend="mlx"  # Use MLX backend!
+            backend="mlx",  # Use MLX backend!
         )
 
         if os.path.exists(temp_output):
@@ -87,8 +88,10 @@ def test_hubert_dimension():
     except Exception as e:
         print(f"\n❌ FAILED: {e}")
         import traceback
+
         traceback.print_exc()
         return False
+
 
 if __name__ == "__main__":
     success = test_hubert_dimension()

@@ -18,6 +18,7 @@ project_root = str(Path(__file__).resolve().parent.parent)
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
+
 def test_rmvpe_standalone():
     """Test RMVPE pitch detection in isolation."""
     print("=" * 80)
@@ -52,8 +53,10 @@ def test_rmvpe_standalone():
     except Exception as e:
         print(f"❌ FAILED: {e}")
         import traceback
+
         traceback.print_exc()
         return False
+
 
 def test_pytorch_rmvpe():
     """Test PyTorch RMVPE for comparison."""
@@ -89,8 +92,10 @@ def test_pytorch_rmvpe():
     except Exception as e:
         print(f"❌ FAILED: {e}")
         import traceback
+
         traceback.print_exc()
         return False
+
 
 def test_full_rvc_inference():
     """Test full RVC inference with real model."""
@@ -118,6 +123,7 @@ def test_full_rvc_inference():
 
         # Save as temp file
         import soundfile as sf
+
         temp_input = "/tmp/test_input.wav"
         temp_output = "/tmp/test_output.wav"
         sf.write(temp_input, audio, 16000)
@@ -141,7 +147,7 @@ def test_full_rvc_inference():
             f0_autotune=False,
             split_audio=False,
             embedder_model="contentvec",
-            backend="torch"  # Use PyTorch backend first
+            backend="torch",  # Use PyTorch backend first
         )
 
         if os.path.exists(temp_output):
@@ -159,8 +165,10 @@ def test_full_rvc_inference():
     except Exception as e:
         print(f"❌ FAILED: {e}")
         import traceback
+
         traceback.print_exc()
         return False
+
 
 def main():
     print("\n" + "🔍" * 40)
@@ -171,37 +179,44 @@ def main():
     results = {}
 
     # Test 1: PyTorch RMVPE (should work)
-    results['pytorch_rmvpe'] = test_pytorch_rmvpe()
+    results["pytorch_rmvpe"] = test_pytorch_rmvpe()
 
     # Test 2: MLX RMVPE (currently failing)
-    results['mlx_rmvpe'] = test_rmvpe_standalone()
+    results["mlx_rmvpe"] = test_rmvpe_standalone()
 
     # Test 3: Full RVC pipeline with PyTorch (should work)
-    if results['pytorch_rmvpe']:
-        results['full_pipeline'] = test_full_rvc_inference()
+    if results["pytorch_rmvpe"]:
+        results["full_pipeline"] = test_full_rvc_inference()
     else:
         print("\n⚠️ Skipping full pipeline test (PyTorch RMVPE failed)")
-        results['full_pipeline'] = False
+        results["full_pipeline"] = False
 
     # Summary
     print("\n" + "=" * 80)
     print("SUMMARY")
     print("=" * 80)
-    print(f"PyTorch RMVPE:      {'✅ PASSED' if results['pytorch_rmvpe'] else '❌ FAILED'}")
+    print(
+        f"PyTorch RMVPE:      {'✅ PASSED' if results['pytorch_rmvpe'] else '❌ FAILED'}"
+    )
     print(f"MLX RMVPE:          {'✅ PASSED' if results['mlx_rmvpe'] else '❌ FAILED'}")
-    print(f"Full RVC Pipeline:  {'✅ PASSED' if results['full_pipeline'] else '❌ FAILED'}")
+    print(
+        f"Full RVC Pipeline:  {'✅ PASSED' if results['full_pipeline'] else '❌ FAILED'}"
+    )
     print("=" * 80)
 
-    if not results['mlx_rmvpe']:
+    if not results["mlx_rmvpe"]:
         print("\n💡 Diagnosis:")
         print("   - MLX RMVPE has a UNet decoder shape mismatch")
         print("   - This is a pre-existing bug in the MLX implementation")
         print("   - PyTorch RMVPE works correctly for comparison")
-        print("   - Chunking optimization is ready but cannot be benchmarked until fixed")
-    elif results['mlx_rmvpe'] and results['pytorch_rmvpe']:
+        print(
+            "   - Chunking optimization is ready but cannot be benchmarked until fixed"
+        )
+    elif results["mlx_rmvpe"] and results["pytorch_rmvpe"]:
         print("\n🎉 All tests passed! Ready to benchmark!")
 
     return all(results.values())
+
 
 if __name__ == "__main__":
     success = main()

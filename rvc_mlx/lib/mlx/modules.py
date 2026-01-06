@@ -2,6 +2,7 @@ import mlx.core as mx
 import mlx.nn as nn
 from rvc_mlx.lib.mlx.commons import fused_add_tanh_sigmoid_multiply
 
+
 class WaveNet(nn.Module):
     def __init__(
         self,
@@ -22,7 +23,7 @@ class WaveNet(nn.Module):
         self.gin_channels = gin_channels
         self.p_dropout = p_dropout
         # MLX doesn't registers buffers in same way, but we can keep it as attribute
-        self.n_channels_tensor = mx.array([hidden_channels]) 
+        self.n_channels_tensor = mx.array([hidden_channels])
 
         self.in_layers = []
         self.res_skip_layers = []
@@ -43,7 +44,7 @@ class WaveNet(nn.Module):
                     kernel_size,
                     stride=1,
                     padding=paddings[i],
-                    dilation=dilations[i]
+                    dilation=dilations[i],
                 )
             )
             res_skip_channels = (
@@ -52,29 +53,29 @@ class WaveNet(nn.Module):
             self.res_skip_layers.append(
                 nn.Conv1d(hidden_channels, res_skip_channels, 1)
             )
-        
-        # In MLX we explicitly add layers to self.layers or assign to attributes to register params 
-        # (Though assigning to a list isn't enough for auto-registration in Module.parameters(), 
-        # we need to assign to self attributes specifically or use ModuleList equivalent if available, 
+
+        # In MLX we explicitly add layers to self.layers or assign to attributes to register params
+        # (Though assigning to a list isn't enough for auto-registration in Module.parameters(),
+        # we need to assign to self attributes specifically or use ModuleList equivalent if available,
         # but MLX doesn't have ModuleList. We usually just use lists and manual iteration or setattr.)
         # Wait, simple list assignment DOES NOT register properties in MLX.
         # We need to assign them to attributes like self.layer_0, etc. or use a custom list wrapper.
         # The Pythonic way in MLX is often:
-        self._in_layers = self.in_layers # internal list
+        self._in_layers = self.in_layers  # internal list
         for i, layer in enumerate(self.in_layers):
             setattr(self, f"in_layer_{i}", layer)
-            
+
         self._res_skip_layers = self.res_skip_layers
         for i, layer in enumerate(self.res_skip_layers):
             setattr(self, f"res_skip_layer_{i}", layer)
 
     def __call__(self, x, x_mask, g=None):
-        output = x # Clone not needed for functional-like updates but variable reuse implies we track it.
+        output = x  # Clone not needed for functional-like updates but variable reuse implies we track it.
         # Initialize output accumulator
         output_acc = mx.zeros_like(x)
 
         if g is not None:
-             g = self.cond_layer(g)
+            g = self.cond_layer(g)
 
         for i in range(self.n_layers):
             # Access layers
@@ -82,7 +83,7 @@ class WaveNet(nn.Module):
             res_skip_layer = getattr(self, f"res_skip_layer_{i}")
 
             x_in = in_layer(x)
-            
+
             g_l = 0
             if g is not None:
                 g_l = g[
@@ -95,14 +96,13 @@ class WaveNet(nn.Module):
             acts = self.drop(acts)
 
             res_skip_acts = res_skip_layer(acts)
-            
+
             if i < self.n_layers - 1:
                 res_acts = res_skip_acts[:, :, : self.hidden_channels]
                 x = (x + res_acts) * x_mask
                 output_acc = output_acc + res_skip_acts[:, :, self.hidden_channels :]
             else:
                 output_acc = output_acc + res_skip_acts
-
 
         return output_acc * x_mask
 

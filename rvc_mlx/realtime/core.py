@@ -1,4 +1,3 @@
-
 import os
 import sys
 import time
@@ -70,7 +69,7 @@ class Realtime:
             else None
         )
         self.board = self.setup_pedalboard(**kwargs) if post_process else None
-        
+
         self.pipeline = create_pipeline(
             model_path,
             index_path,
@@ -79,9 +78,9 @@ class Realtime:
             embedder_model_custom,
             sid,
         )
-        
+
         # Noise reduction placeholder (removed TorchGate)
-        self.reduced_noise = None 
+        self.reduced_noise = None
 
     def setup_pedalboard(self, **kwargs):
         board = Pedalboard()
@@ -165,9 +164,7 @@ class Realtime:
             + extra_frame_16k
             + crossfade_frame_16k
         )
-        if (
-            modulo := convert_size_16k % self.window_size
-        ) != 0:
+        if (modulo := convert_size_16k % self.window_size) != 0:
             convert_size_16k = convert_size_16k + (self.window_size - modulo)
         self.convert_feature_size_16k = convert_size_16k // self.window_size
 
@@ -176,15 +173,13 @@ class Realtime:
         self.silence_front = (
             extra_frame_16k - (self.window_size * 5) if self.silence_front else 0
         )
-        
+
         audio_buffer_size = block_frame_16k + crossfade_frame_16k
         self.audio_buffer = np.zeros(audio_buffer_size, dtype=self.dtype)
-        
+
         self.convert_buffer = np.zeros(convert_size_16k, dtype=self.dtype)
-        
-        self.pitch_buffer = np.zeros(
-            self.convert_feature_size_16k + 1, dtype=np.int64
-        )
+
+        self.pitch_buffer = np.zeros(self.convert_feature_size_16k + 1, dtype=np.int64)
         self.pitchf_buffer = np.zeros(
             self.convert_feature_size_16k + 1, dtype=self.dtype
         )
@@ -205,8 +200,10 @@ class Realtime:
             raise RuntimeError("Pipeline is not initialized.")
 
         # Resample to 16k
-        audio_input_16k = librosa.resample(audio_input, orig_sr=AUDIO_SAMPLE_RATE, target_sr=self.sample_rate)
-        
+        audio_input_16k = librosa.resample(
+            audio_input, orig_sr=AUDIO_SAMPLE_RATE, target_sr=self.sample_rate
+        )
+
         circular_write(audio_input_16k, self.audio_buffer)
 
         vol_t = np.sqrt(np.square(self.audio_buffer).mean())
@@ -215,7 +212,7 @@ class Realtime:
         if self.vad is not None:
             is_speech = self.vad.is_speech(audio_input_16k)
             if not is_speech:
-                # Run through pipeline to keep states but return silence? 
+                # Run through pipeline to keep states but return silence?
                 # Or just return silence.
                 # To maintain consistent behavior with original which keeps running to avoid lag spikes
                 audio_model = self.pipeline.voice_conversion(
@@ -237,7 +234,7 @@ class Realtime:
                     self.reduced_noise,
                     self.board,
                 )
-                out_len = audio_model.shape[0] if hasattr(audio_model, 'shape') else 0
+                out_len = audio_model.shape[0] if hasattr(audio_model, "shape") else 0
                 return np.zeros(out_len, dtype=self.dtype), vol
 
         if vol < self.input_sensitivity:
@@ -260,7 +257,7 @@ class Realtime:
                 self.reduced_noise,
                 self.board,
             )
-            out_len = audio_model.shape[0] if hasattr(audio_model, 'shape') else 0
+            out_len = audio_model.shape[0] if hasattr(audio_model, "shape") else 0
             return np.zeros(out_len, dtype=self.dtype), vol
 
         circular_write(audio_input_16k, self.convert_buffer)
@@ -284,13 +281,17 @@ class Realtime:
             self.reduced_noise,
             self.board,
         )
-        
+
         audio_model_np = np.array(audio_model)
-        audio_model_np = audio_model_np * vol # simple gain adjust if needed, or rely on pipeline volume
+        audio_model_np = (
+            audio_model_np * vol
+        )  # simple gain adjust if needed, or rely on pipeline volume
 
         # Resample back to 48k
-        audio_out = librosa.resample(audio_model_np, orig_sr=self.pipeline.tgt_sr, target_sr=AUDIO_SAMPLE_RATE)
-        
+        audio_out = librosa.resample(
+            audio_model_np, orig_sr=self.pipeline.tgt_sr, target_sr=AUDIO_SAMPLE_RATE
+        )
+
         return audio_out, vol
 
     def __del__(self):
@@ -363,9 +364,7 @@ class VoiceChanger:
         )
 
         self.fade_out_window = 1 - self.fade_in_window
-        self.sola_buffer = np.zeros(
-            self.crossfade_frame, dtype=np.float32
-        )
+        self.sola_buffer = np.zeros(self.crossfade_frame, dtype=np.float32)
 
     def process_audio(
         self,
@@ -392,7 +391,7 @@ class VoiceChanger:
             proposed_pitch,
             proposed_pitch_threshold,
         )
-        
+
         # Ensure audio is numpy
         audio = np.array(audio)
 
@@ -400,59 +399,59 @@ class VoiceChanger:
         # Check audio length buffer validity
         min_len = self.crossfade_frame + self.sola_search_frame
         if audio.shape[0] < min_len:
-             # Just pad with silence if model output is short (e.g. silence)
-             audio = np.pad(audio, (0, min_len - audio.shape[0]))
+            # Just pad with silence if model output is short (e.g. silence)
+            audio = np.pad(audio, (0, min_len - audio.shape[0]))
 
         conv_input = audio[: self.crossfade_frame + self.sola_search_frame]
-        
+
         # Correlation
         # signal.correlate(in1, in2, mode='valid') -> size N - M + 1 (N=conv_input, M=sola_buffer)
-        cor_nom = scipy.signal.correlate(conv_input, self.sola_buffer, mode='valid')
-        
+        cor_nom = scipy.signal.correlate(conv_input, self.sola_buffer, mode="valid")
+
         # Denom (Energy normalization)
         # cor_den = sqrt(conv(input^2, ones))
-        input_sq = conv_input ** 2
+        input_sq = conv_input**2
         ones = np.ones(self.crossfade_frame)
-        cor_den = scipy.signal.correlate(input_sq, ones, mode='valid')
+        cor_den = scipy.signal.correlate(input_sq, ones, mode="valid")
         cor_den = np.sqrt(cor_den + 1e-8)
-        
+
         # Normalized correlation
         # Check if cor_den == 0? (silence)
         # safe divide
         norm_corr = cor_nom / cor_den
         sola_offset = np.argmax(norm_corr)
-        
+
         # Apply offset
         audio = audio[sola_offset:]
-        
+
         # Crossfade
         if audio.shape[0] < self.crossfade_frame:
-              audio = np.pad(audio, (0, self.crossfade_frame - audio.shape[0]))
-              
+            audio = np.pad(audio, (0, self.crossfade_frame - audio.shape[0]))
+
         audio[: self.crossfade_frame] *= self.fade_in_window
         audio[: self.crossfade_frame] += self.sola_buffer * self.fade_out_window
-        
+
         # Update buffer for next block
         # Buffer needs to be saved from the END of the current PROCESSED block
         # We want to return `block_size` samples.
-        # But we generated more? 
-        # Logic: 
+        # But we generated more?
+        # Logic:
         #   We took audio of shape ~ block + extra...
         #   We trimmed start by `sola_offset`.
         #   We crossfaded start.
         #   Now we output `block_size` samples.
         #   The remaining samples at the end are saved for next crossfade.
-        
+
         # Wait, original logic:
         # self.sola_buffer[:] = audio[block_size : block_size + self.crossfade_frame]
-        
+
         # Ensure we have enough data
         needed_end = block_size + self.crossfade_frame
         if audio.shape[0] < needed_end:
-             audio = np.pad(audio, (0, needed_end - audio.shape[0]))
-             
-        self.sola_buffer[:] = audio[block_size : needed_end]
-        
+            audio = np.pad(audio, (0, needed_end - audio.shape[0]))
+
+        self.sola_buffer[:] = audio[block_size:needed_end]
+
         return audio[:block_size], vol
 
     def on_request(
