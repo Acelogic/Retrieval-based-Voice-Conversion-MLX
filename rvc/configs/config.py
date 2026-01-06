@@ -23,17 +23,11 @@ def singleton(cls):
 @singleton
 class Config:
     def __init__(self):
-        if torch.cuda.is_available():
-            self.device = "cuda:0"
-        elif torch.backends.mps.is_available():
-            self.device = "mps"
-        else:
-            self.device = "cpu"
-            
+        self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
         self.gpu_name = (
             torch.cuda.get_device_name(int(self.device.split(":")[-1]))
             if self.device.startswith("cuda")
-            else "Apple M-Series" if self.device == "mps" else None
+            else None
         )
         self.json_config = self.load_config_json()
         self.gpu_mem = None
@@ -50,8 +44,6 @@ class Config:
     def device_config(self):
         if self.device.startswith("cuda"):
             self.set_cuda_config()
-        elif self.device == "mps":
-            self.gpu_mem = 16 # Default to assumes decent unified memory, or could try to detect
         else:
             self.device = "cpu"
 
@@ -71,22 +63,19 @@ class Config:
         )
 
 
-
 def max_vram_gpu(gpu):
     if torch.cuda.is_available():
         gpu_properties = torch.cuda.get_device_properties(gpu)
         total_memory_gb = round(gpu_properties.total_memory / 1024 / 1024 / 1024)
         return total_memory_gb
-    elif torch.backends.mps.is_available():
-        return 16 # Default placeholder
     else:
         return "8"
 
 
 def get_gpu_info():
-    if torch.cuda.is_available():
-        ngpu = torch.cuda.device_count()
-        gpu_infos = []
+    ngpu = torch.cuda.device_count()
+    gpu_infos = []
+    if torch.cuda.is_available() or ngpu != 0:
         for i in range(ngpu):
             gpu_name = torch.cuda.get_device_name(i)
             mem = int(
@@ -94,21 +83,16 @@ def get_gpu_info():
                 + 0.4
             )
             gpu_infos.append(f"{i}: {gpu_name} ({mem} GB)")
-        return "\n".join(gpu_infos)
-    elif torch.backends.mps.is_available():
-        return "0: Apple M-Series (Unified Memory)"
+    if len(gpu_infos) > 0:
+        gpu_info = "\n".join(gpu_infos)
     else:
-        return "Unfortunately, there is no compatible GPU available to support your training."
+        gpu_info = "Unfortunately, there is no compatible GPU available to support your training."
+    return gpu_info
 
 
 def get_number_of_gpus():
     if torch.cuda.is_available():
         num_gpus = torch.cuda.device_count()
         return "-".join(map(str, range(num_gpus)))
-    elif torch.backends.mps.is_available():
-        return "0"
     else:
         return "-"
-
-
-

@@ -310,10 +310,12 @@ class Generator: Module {
     
     func callAsFunction(_ x: MLXArray, f0: MLXArray, g: MLXArray? = nil) -> MLXArray {
         var out = conv_pre(x)
+        print("DEBUG: Generator.conv_pre out: [\(out.min().item(Float.self))...\(out.max().item(Float.self))]")
         
         // Add speaker conditioning if available
         if let g = g, let condLayer = cond {
             out = out + condLayer(g)
+            print("DEBUG: Generator.cond added: [\(out.min().item(Float.self))...\(out.max().item(Float.self))]")
         }
 
         
@@ -321,6 +323,7 @@ class Generator: Module {
         // upp = prod(upsampleRates) = 400
         let upp = 400
         let har_source = m_source(f0, upsampling_factor: upp)
+        print("DEBUG: Generator.har_source: [\(har_source.min().item(Float.self))...\(har_source.max().item(Float.self))]")
         // har_source is now [B, AudioLen, 1]
         
         var resIdx = 0
@@ -332,16 +335,12 @@ class Generator: Module {
             // Add NSF Noise
             // noise_conv reduces har_source resolution to match current 'out'
             let noise_conv = noise_convs[i]
-            // We need to transpose har_source to [B, 1, T] ?? No. MLX is [N, L, C].
-            // har_source is [N, T, 1]. noise_conv(1->C) -> [N, T_down, C].
-            // Should match 'out' shape.
             let n = noise_conv(har_source)
             
-            // Crop if necessary (Python does: if x.shape[1] != n.shape[1])
+            // Crop if necessary
             if out.shape[1] != n.shape[1] {
                 let minLen = min(out.shape[1], n.shape[1])
                 out = out[0..., 0..<minLen, 0...]
-                // n = n[0..., 0..<minLen, 0...] // n is let constant, but we add it.
                 out = out + n[0..., 0..<minLen, 0...]
             } else {
                 out = out + n
@@ -358,11 +357,15 @@ class Generator: Module {
             }
             // Average
             out = xs! / 3.0
+            print("DEBUG: Generator.ups[\(i)] (after resblocks) out: [\(out.min().item(Float.self))...\(out.max().item(Float.self))]")
         }
         
         out = leakyRelu(out)
         out = conv_post(out)
+        print("DEBUG: Generator.conv_post out: [\(out.min().item(Float.self))...\(out.max().item(Float.self))]")
+        
         out = tanh(out)
+        print("DEBUG: Generator.final (tanh): [\(out.min().item(Float.self))...\(out.max().item(Float.self))]")
         return out
     }
 }

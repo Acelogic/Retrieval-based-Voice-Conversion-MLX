@@ -388,6 +388,7 @@ class RMVPE: Module {
         // audio: [T]
         let melProcessor = MelSpectrogram()
         let mel = melProcessor(audio) // [n_mels, T_frames] (Log Mel) (128, T)
+        print("DEBUG: Mel Spectrogram Stats: min \(mel.min().item(Float.self)), max \(mel.max().item(Float.self)), shape \(mel.shape)")
         
         // Model expects [N, T, n_mels] (transposed)
         // mel.T -> [T_frames, n_mels]. Add dim [1, T, n_mels]
@@ -398,6 +399,13 @@ class RMVPE: Module {
         
         // Decode
         let f0 = self.decode(hidden, thred: thred) // [1, T, 1]
+        
+        // DEBUG Stats
+        let f0_min = f0.min().item(Float.self)
+        let f0_max = f0.max().item(Float.self)
+        let f0_mean = f0.mean().item(Float.self)
+        print("DEBUG: RMVPE F0 Stats: min \(f0_min), max \(f0_max), mean \(f0_mean)")
+        
         return f0
     }
 }

@@ -50,12 +50,9 @@ def extract_model(
         else:
             dataset_length = None
 
-        try:
-            with open(os.path.join(now_dir, "assets", "config.json"), "r") as f:
-                data = json.load(f)
-                model_author = data.get("model_author", None)
-        except (FileNotFoundError, json.JSONDecodeError):
-            model_author = None
+        with open(os.path.join(now_dir, "assets", "config.json"), "r") as f:
+            data = json.load(f)
+            model_author = data.get("model_author", None)
 
         opt = OrderedDict(
             weight={
