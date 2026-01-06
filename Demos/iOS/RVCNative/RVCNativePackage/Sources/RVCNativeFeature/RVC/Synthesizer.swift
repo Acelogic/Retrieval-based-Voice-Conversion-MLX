@@ -3,6 +3,27 @@ import MLX
 import MLXNN
 import MLXRandom
 
+/// RVC Synthesizer Implementation for iOS
+///
+/// This is a Swift/MLX port of the Python MLX implementation in:
+/// - rvc_mlx/lib/mlx/encoders.py (TextEncoder, Encoder)
+/// - rvc_mlx/lib/mlx/generators.py (Generator)
+/// - rvc_mlx/lib/mlx/attentions.py (MultiHeadAttention, FFN)
+///
+/// CRITICAL FIX APPLIED:
+/// - TextEncoder output format: Fixed dimension mismatch (B,C,T vs B,T,C)
+///   - Now correctly transposes stats before splitting
+///   - Returns (m, logs) in (B, C, T) format matching Python
+///   - Returns xMask in (B, 1, T) format matching Python
+///   - This was the "Known issue" in commit df081a66
+///
+/// Architecture matches Python exactly:
+/// - TextEncoder: LeakyReLU(0.1), not GELU
+/// - FFN: ReLU activation (default when activation=None in Python)
+/// - Generator: LeakyReLU with LRELU_SLOPE
+///
+/// Reference: rvc_mlx/lib/mlx/encoders.py, generators.py
+
 // MARK: - Utility Functions
 
 func sequenceMask(lengths: MLXArray, maxLength: Int) -> MLXArray {
@@ -198,15 +219,25 @@ class TextEncoder: Module {
         let xMaskExpanded = xMask.expandedDimensions(axis: -1)  // (B, L, 1)
         
         x = encoder(x, xMask: xMaskExpanded)
-        
+
         let stats = proj(x) * xMaskExpanded
-        
-        // Split into mean and log variance
+
+        // CRITICAL: Transpose to match Python PyTorch format (B, C, T) before splitting
+        // Python line 141: stats = stats.transpose(0, 2, 1)  # (B, T, C*2) -> (B, C*2, T)
+        // This was the "dimension format mismatch" bug!
+        let statsTransposed = stats.transposed(0, 2, 1)  // (B, L, C*2) -> (B, C*2, L)
+
+        // Split on channel dimension (axis=1) to match Python
+        // Python line 144: m, logs = mx.split(stats, 2, axis=1)
         let splitIdx = outChannels
-        let m = stats[0..., 0..., 0..<splitIdx]
-        let logs = stats[0..., 0..., splitIdx...]
-        
-        return (m, logs, xMask)
+        let m = statsTransposed[0..., 0..<splitIdx, 0...]  // (B, C, L)
+        let logs = statsTransposed[0..., splitIdx..., 0...]  // (B, C, L)
+
+        // Return xMask in (B, 1, L) format to match Python
+        // Python line 148: x_mask_out = x_mask[:, None, :]
+        let xMaskOut = xMask.expandedDimensions(axis: 1)  // (B, L) -> (B, 1, L)
+
+        return (m, logs, xMaskOut)
     }
 }
 
