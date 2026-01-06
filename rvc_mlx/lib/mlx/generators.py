@@ -31,7 +31,7 @@ class SineGenerator(nn.Module):
         B, L, _ = f0.shape
         
         # Upsampling grid
-        upsampling_grid = mx.arange(1, upsampling_factor + 1, dtype=f0.dtype)
+        upsampling_grid = mx.arange(1, upsampling_factor + 1).astype(f0.dtype)
         # grid shape (upsample,) -> broadcast with (B, L, 1) to (B, L, upsample)?
         # We need to flatten time.
         
@@ -69,7 +69,7 @@ class SineGenerator(nn.Module):
         phase_increments = phase_increments.reshape(B, -1, 1)
         
         # Scale for harmonics: (1, 1, H)
-        harmonic_scale = mx.arange(1, self.waveform_dim + 1, dtype=f0.dtype).reshape(1, 1, -1)
+        harmonic_scale = mx.arange(1, self.waveform_dim + 1).astype(f0.dtype).reshape(1, 1, -1)
         phase_increments = phase_increments * harmonic_scale
         
         # Random phase
@@ -215,8 +215,11 @@ class HiFiGANNSFGenerator(nn.Module):
         for i, l in enumerate(self.resblocks): setattr(self, f"resblock_{i}", l)
 
     def __call__(self, x, f0, g=None):
-        har_source = self.m_source(f0, self.upp) 
-        
+        # Input x is in PyTorch format (B, C, T), transpose to MLX format (B, T, C)
+        x = x.transpose(0, 2, 1)  # (B, C, T) -> (B, T, C)
+
+        har_source = self.m_source(f0, self.upp)
+
         x = self.conv_pre(x)
         
         if g is not None:
@@ -258,4 +261,9 @@ class HiFiGANNSFGenerator(nn.Module):
         x = nn.leaky_relu(x)
         x = self.conv_post(x)
         x = mx.tanh(x)
+
+        # conv_post reduces to 1 channel: x is (B, T, 1)
+        # Keep in (B, T, 1) format for pipeline compatibility
+        # Pipeline expects (B, T, 1) and extracts with [0, :, 0]
+
         return x

@@ -71,9 +71,9 @@ def benchmark_mlx_rmvpe(audio, warmup=True, num_runs=3):
     """Benchmark MLX RMVPE implementation."""
     try:
         import mlx.core as mx
-        from rvc.lib.mlx.rmvpe import RMVPE0Predictor as MLXRMVPE
+        from rvc_mlx.lib.mlx.rmvpe import RMVPE0Predictor as MLXRMVPE
 
-        weights_file = "rvc/models/predictors/rmvpe_mlx.npz"
+        weights_file = "rvc_mlx/models/predictors/rmvpe_mlx.npz"
 
         if not os.path.exists(weights_file):
             return None, f"Model not found at {weights_file}"
