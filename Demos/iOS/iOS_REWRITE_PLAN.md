@@ -21,15 +21,8 @@
 
 ## Phase 2: Swift Implementation Rewrite
 
-**Note:** Keep existing SwiftUI GUI (ContentView, AudioPlayer, AudioRecorder). Only rewrite ML inference layer.
+### 2.1 Core Architecture (Match Python Exactly)
 
-### 2.1 Files to Keep (UI Layer)
-- ✅ `ContentView.swift` - SwiftUI interface
-- ✅ `AudioPlayer.swift` - Audio playback
-- ✅ `AudioRecorder.swift` - Audio recording
-- ✅ `RVCInference.swift` - Keep the class structure, rewrite inference logic
-
-### 2.2 Files to Rewrite (ML Layer)
 **Priority Order:**
 1. **HuBERT** (`rvc_mlx/lib/mlx/encoders.py` → Swift)
    - Feature extraction CNN layers
