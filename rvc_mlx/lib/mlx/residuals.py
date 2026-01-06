@@ -78,22 +78,18 @@ class ResidualCouplingBlock(nn.Module):
     def __call__(self, x, x_mask, g=None, reverse=False):
         # x: (N, L, C)
         
-        iterator = range(self.n_flows)
-        if reverse:
-            iterator = reversed(iterator)
-            
-        for i in iterator:
-            flow = getattr(self, f"flow_{i}")
-            x, _ = flow(x, x_mask, g=g, reverse=reverse)
-            
-            # Flip logic after each flow step (except maybe last? check source. Source adds Flip module to list.)
-            # Original: flows.append(Layer); flows.append(Flip)
-            # My loop: implicit flip?
-            # Wait, PyTorch ModuleList approach iterates all. 
-            # I should explicitly do flip.
-            # x is (N, L, C). Flip C -> axis=2
-            # x = mx.flip(x, axis=2) 
-        x = x[:, :, ::-1]
+        if not reverse:
+            for i in range(self.n_flows):
+                flow = getattr(self, f"flow_{i}")
+                x, _ = flow(x, x_mask, g=g, reverse=False)
+                # Flip channel dimension (axis 2)
+                x = x[:, :, ::-1]
+        else:
+            for i in reversed(range(self.n_flows)):
+                flow = getattr(self, f"flow_{i}")
+                # Flip first
+                x = x[:, :, ::-1]
+                x, _ = flow(x, x_mask, g=g, reverse=True)
             
         return x
 

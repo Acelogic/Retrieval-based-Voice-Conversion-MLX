@@ -18,7 +18,7 @@ class HubertConfig:
         max_position_embeddings: int = 512,
         type_vocab_size: int = 2,
         initializer_range: float = 0.02,
-        layer_norm_eps: float = 1e-12,
+        layer_norm_eps: float = 1e-5,
         pad_token_id: int = 1,
         bos_token_id: int = 0,
         eos_token_id: int = 2,
@@ -331,8 +331,10 @@ class HubertPositionalConvEmbedding(nn.Module):
         if self.bias is not None:
              out = out + self.bias
              
-        # Crop
-        # 128 kernel, pad 64 (same logic as before)
+        # Crop (same-pad logic: kernel=128 is even, remove 1)
         out = out[:, :-1, :]
+        
+        # GELU activation (was missing!)
+        out = nn.gelu(out)
         
         return out + hidden_states

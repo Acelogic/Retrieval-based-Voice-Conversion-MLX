@@ -58,16 +58,16 @@ class Encoder(nn.Module):
         # Then expand to (B, 1, L, L) for heads?
         
         x_mask_b = x_mask.astype(mx.float32)
-        attn_mask = (x_mask_b[:, None, :] * x_mask_b[:, :, None])
+
         if x_mask.ndim == 2:
-             # usually sequence_mask returns (B, L)
-             attn_mask = x_mask_b[:, None, :] * x_mask_b[:, :, None] # (B, 1, L) * (B, L, 1) -> (B, L, L)
+             # x_mask is (B, L)
+             attn_mask = x_mask_b[:, None, :] * x_mask_b[:, :, None]  # (B, 1, L) * (B, L, 1) -> (B, L, L)
              # Add head dim -> (B, 1, L, L)
              attn_mask = attn_mask[:, None, :, :]
         elif x_mask.ndim == 3:
-             # (B, L, 1)
-             attn_mask = x_mask_b * x_mask_b.transpose(0, 2, 1) # (B,L,1)*(B,1,L)->(B,L,L)
-             attn_mask = attn_mask[:, None, :, :]
+             # x_mask is (B, L, 1)
+             attn_mask = x_mask_b * x_mask_b.transpose(0, 2, 1)  # (B, L, 1) * (B, 1, L) -> (B, L, L)
+             attn_mask = attn_mask[:, None, :, :]  # -> (B, 1, L, L)
              
         x = x * x_mask # broadcast
         
@@ -130,22 +130,28 @@ class TextEncoder(nn.Module):
             
         x = x * math.sqrt(self.hidden_channels)
         x = self.lrelu(x)
-        
-        # PyTorch transposes to (B, C, L) here.
-        # We stick to (B, L, C).
-        # x_mask: (B, L)
+
+        # Keep (B, T, C) format for MLX
+        # x_mask: (B, T)
         x_mask = sequence_mask(lengths, x.shape[1])
-        # Unsqueeze for broadcasting? (B, L, 1)
+        # Unsqueeze for broadcasting: (B, T, 1)
         x_mask_expanded = x_mask[:, :, None]
-        
+
         x = self.encoder(x, x_mask_expanded)
-        
+
+        # proj is Conv1d: input (B, T, C), output (B, T, Out*2)
         stats = self.proj(x) * x_mask_expanded
-        
-        # stats: (B, L, Out*2)
-        # split
-        m, logs = mx.split(stats, 2, axis=-1)
-        return m, logs, x_mask
+
+        # Transpose to PyTorch format (B, C, T) before splitting
+        stats = stats.transpose(0, 2, 1)  # (B, T, C*2) -> (B, C*2, T)
+
+        # Split on channel dimension (axis=1) to match PyTorch
+        m, logs = mx.split(stats, 2, axis=1)
+
+        # Return in PyTorch format: (B, C, T) for m and logs, (B, 1, T) for x_mask
+        # Add dimension to x_mask to match PyTorch: (B, T) -> (B, 1, T)
+        x_mask_out = x_mask[:, None, :]
+        return m, logs, x_mask_out
 
 class PosteriorEncoder(nn.Module):
     def __init__(

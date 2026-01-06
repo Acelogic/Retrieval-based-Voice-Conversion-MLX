@@ -353,25 +353,54 @@ class RMVPE0Predictor:
         return hidden[:, :n_frames, :]
 
     def decode(self, hidden, thred=0.03):
+        """
+        Decodes hidden representation to F0.
+        Matches PyTorch's to_local_average_cents exactly.
+        """
         hidden = np.array(hidden)
-        if hidden.ndim == 3: hidden = hidden[0]
+        if hidden.ndim == 3: 
+            hidden = hidden[0]
         
-        index = np.argmax(hidden, axis=1)
-        maxx = np.max(hidden, axis=1)
+        # Find center (argmax) for each frame
+        center = np.argmax(hidden, axis=1)
         
-        # Pad hidden for window gathering
-        padded_hidden = np.pad(hidden, ((0, 0), (4, 4)), mode='constant')
+        # Pad hidden for window gathering (matches PyTorch)
+        salience = np.pad(hidden, ((0, 0), (4, 4)), mode='constant')
         
-        f0 = np.zeros(len(hidden))
-        for i in range(len(hidden)):
-            if maxx[i] > thred:
-                # index[i] is 0..359
-                # padded_hidden window [index[i] : index[i]+9] corresponds to original [index[i]-4 : index[i]+4]
-                s_win = padded_hidden[i, index[i] : index[i]+9]
-                c_win = self.cents_mapping[index[i] : index[i]+9]
-                if np.sum(s_win) > 0:
-                    cents_pred = np.dot(s_win, c_win) / np.sum(s_win)
-                    f0[i] = 440 * 2**((cents_pred - 6900) / 1200)
+        # Adjust center indices to account for padding (PyTorch does: center += 4)
+        center = center + 4
+        
+        # Extract 9-sample windows around each center
+        starts = center - 4
+        ends = center + 5
+        
+        # Vectorized extraction (matching PyTorch's loop)
+        todo_salience = []
+        todo_cents_mapping = []
+        for idx in range(salience.shape[0]):
+            todo_salience.append(salience[idx, starts[idx]:ends[idx]])
+            todo_cents_mapping.append(self.cents_mapping[starts[idx]:ends[idx]])
+        
+        todo_salience = np.array(todo_salience)
+        todo_cents_mapping = np.array(todo_cents_mapping)
+        
+        # Weighted average of cents
+        product_sum = np.sum(todo_salience * todo_cents_mapping, axis=1)
+        weight_sum = np.sum(todo_salience, axis=1)
+        
+        # Avoid division by zero
+        cents_pred = np.divide(product_sum, weight_sum, 
+                               out=np.zeros_like(product_sum), 
+                               where=weight_sum != 0)
+        
+        # Apply threshold based on max salience
+        maxx = np.max(salience, axis=1)
+        cents_pred[maxx <= thred] = 0
+        
+        # Convert cents to F0 (matching PyTorch: f0 = 10 * 2^(cents/1200))
+        f0 = 10 * (2 ** (cents_pred / 1200))
+        f0[f0 == 10] = 0  # Zero out where cents_pred was 0
+        
         return f0
 
     def infer_from_audio(self, audio, thred=0.03):

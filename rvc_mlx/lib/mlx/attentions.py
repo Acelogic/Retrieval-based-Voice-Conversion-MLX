@@ -113,12 +113,78 @@ class MultiHeadAttention(nn.Module):
         return output, p_attn
 
     def _compute_relative_scores(self, query, length):
-        # Placeholder / TODO: Full relative attention port
-        # For now return 0 to avoid breaking shape logic if not implemented perfectly
-        return 0 
+        """Compute relative position scores for keys."""
+        rel_emb = self._get_relative_embeddings(self.emb_rel_k, length)
+        rel_logits = self._matmul_with_relative_keys(
+            query / math.sqrt(self.k_channels), rel_emb
+        )
+        return self._relative_position_to_absolute_position(rel_logits) 
         
     def _apply_relative_values(self, p_attn, length):
-        return 0
+        """Apply relative position embeddings to values."""
+        rel_weights = self._absolute_position_to_relative_position(p_attn)
+        rel_emb = self._get_relative_embeddings(self.emb_rel_v, length)
+        return self._matmul_with_relative_values(rel_weights, rel_emb)
+
+    # Helper methods for relative position embeddings
+    def _matmul_with_relative_values(self, x, y):
+        """Matmul with relative values."""
+        # x: (B, Heads, T, 2*T-1), y: (Heads, 2*T-1, HeadDim) or (1, 2*T-1, HeadDim)
+        # Unsqueeze y to (1, Heads, 2*T-1, HeadDim) if needed
+        return mx.matmul(x, mx.expand_dims(y, 0))
+
+    def _matmul_with_relative_keys(self, x, y):
+        """Matmul with relative keys."""
+        # x: (B, Heads, T, HeadDim), y: (Heads, 2*T-1, HeadDim)
+        # transpose y: (Heads, HeadDim, 2*T-1)
+        return mx.matmul(x, mx.expand_dims(y, 0).transpose(0, 1, 3, 2))
+
+    def _get_relative_embeddings(self, embeddings, length):
+        """Extract relative embeddings for given length."""
+        # embeddings: (Heads, 2*window_size+1, HeadDim)
+        pad_length = max(length - (self.window_size + 1), 0)
+        start = max((self.window_size + 1) - length, 0)
+        end = start + 2 * length - 1
+
+        if pad_length > 0:
+            # Pad on dimension 1 (middle dimension)
+            # MLX pad expects list of tuples: [(axis0_left, axis0_right), (axis1_left, axis1_right), ...]
+            embeddings = mx.pad(embeddings, pad_width=[(0, 0), (pad_length, pad_length), (0, 0)])
+        return embeddings[:, start:end, :]
+
+    def _relative_position_to_absolute_position(self, x):
+        """Convert relative position to absolute position indexing."""
+        batch, heads, length, _ = x.shape
+
+        # Pad with one column on the right
+        x = mx.pad(x, pad_width=[(0, 0), (0, 0), (0, 0), (0, 1)])
+
+        # Reshape to (B, Heads, length * 2 * length)
+        x_flat = x.reshape(batch, heads, length * 2 * length)
+
+        # Pad with (length - 1) elements
+        x_flat = mx.pad(x_flat, pad_width=[(0, 0), (0, 0), (0, length - 1)])
+
+        # Reshape and slice
+        x_final = x_flat.reshape(batch, heads, length + 1, 2 * length - 1)
+        return x_final[:, :, :length, length - 1:]
+
+    def _absolute_position_to_relative_position(self, x):
+        """Convert absolute position to relative position indexing."""
+        batch, heads, length, _ = x.shape
+
+        # Pad with (length - 1) columns on the right
+        x = mx.pad(x, pad_width=[(0, 0), (0, 0), (0, 0), (0, length - 1)])
+
+        # Reshape to (B, Heads, length^2 + length*(length-1))
+        x_flat = x.reshape(batch, heads, length**2 + length * (length - 1))
+
+        # Pad with length elements on the left
+        x_flat = mx.pad(x_flat, pad_width=[(0, 0), (0, 0), (length, 0)])
+
+        # Reshape to (B, Heads, length, 2*length) and slice off first column
+        x_final = x_flat.reshape(batch, heads, length, 2 * length)
+        return x_final[:, :, :, 1:]
 
 class FFN(nn.Module):
     def __init__(
