@@ -6,18 +6,21 @@
 ## Phase 1: Model Conversion & Validation
 
 ### 1.1 Convert Models with Latest Fixes
-- [ ] Create comprehensive model conversion script
-  - Convert PyTorch HuBERT → MLX safetensors
-  - Convert PyTorch RMVPE → MLX safetensors
-  - Convert PyTorch RVC (Drake/Coder) → MLX safetensors
-  - Apply all key remappings from Python implementation
-  - Verify weight shapes and dtypes
+- [x] Create comprehensive model conversion script ✅
+  - [x] Convert PyTorch HuBERT → MLX safetensors
+  - [x] Convert PyTorch RMVPE → MLX safetensors
+  - [x] Convert PyTorch RVC (Drake/Coder) → MLX safetensors
+  - [x] Apply all key remappings from Python implementation
+  - [x] Verify weight shapes and dtypes
+  - **Created:** `tools/convert_models_for_ios.py`
+  - **Converted:** Drake model (457 tensors, 55MB)
 
 ### 1.2 Test Converted Models in Python First
 - [ ] Load converted models in Python MLX
 - [ ] Run inference and verify 0.986+ correlation
 - [ ] Document any conversion issues
 - [ ] Create test audio samples for iOS validation
+- **Note:** Models are gitignored (.safetensors), need to be converted locally
 
 ## Phase 2: Swift Implementation Rewrite
 
@@ -31,25 +34,37 @@
 
 ### 2.2 Files to Rewrite (ML Layer)
 **Priority Order:**
-1. **HuBERT** (`rvc_mlx/lib/mlx/encoders.py` → Swift)
-   - Feature extraction CNN layers
-   - Positional encoding
-   - Transformer encoder
-   - GELU activation (precise formula)
 
-2. **RMVPE** (`rvc_mlx/lib/mlx/rmvpe.py` → Swift)
-   - DeepUnet architecture
-   - BiGRU implementation
-   - Mel spectrogram processing
-   - **F0 decoding: `440 * 2^((cents-4080)/1200)`** ✅ Already fixed
+1. **HuBERT** (`rvc_mlx/lib/mlx/encoders.py` → Swift) ✅ **COMPLETED**
+   - [x] Feature extraction CNN layers
+   - [x] Positional encoding
+   - [x] Transformer encoder
+   - [x] GELU activation (precise formula)
+   - **Fixes Applied:**
+     - layerNormEps: 1e-12 → 1e-5 (matches Python line 39)
+     - Added missing GELU in HubertPositionalConvEmbedding
+     - Documented precise GELU requirement (not approximation)
+   - **Commit:** 80377122
 
-3. **Synthesizer** (`rvc_mlx/lib/mlx/generators.py` → Swift)
-   - TextEncoder
-   - ResidualCouplingBlock (Flow)
-   - Generator (NSF-HiFiGAN)
-   - Correct transpose/padding operations
+2. **RMVPE** (`rvc_mlx/lib/mlx/rmvpe.py` → Swift) ✅ **COMPLETED**
+   - [x] DeepUnet architecture (existing implementation kept)
+   - [x] BiGRU implementation (existing implementation kept)
+   - [x] Mel spectrogram processing (existing implementation kept)
+   - [x] F0 decoding with weighted averaging
+   - **Fixes Applied:**
+     - Complete rewrite of decode() method
+     - Weighted averaging around argmax peak (9-sample window)
+     - Fixed formula: 10 * 2^(cents/1200) [was: 440 * 2^((cents-4080)/1200)]
+     - Matches Python rmvpe.py:355-404 exactly
+   - **Commit:** e48f6c56
 
-### 2.2 Implementation Strategy
+3. **Synthesizer** (`rvc_mlx/lib/mlx/generators.py` → Swift) ⏳ **TODO**
+   - [ ] Verify TextEncoder matches Python implementation
+   - [ ] Check ResidualCouplingBlock transpose operations
+   - [ ] Verify Generator GELU activations
+   - [ ] Validate dimension formats (B,C,T vs B,T,C)
+
+### 2.3 Implementation Strategy
 
 For each component:
 1. **Read Python implementation line-by-line**
@@ -58,7 +73,7 @@ For each component:
 4. **Verify Swift outputs match Python**
 5. **Document any MLX Swift API differences**
 
-### 2.3 Critical Details to Match
+### 2.4 Critical Details to Match
 
 **From Python Implementation:**
 - Input/output shapes at each layer
