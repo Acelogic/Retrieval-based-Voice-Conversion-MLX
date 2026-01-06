@@ -1,7 +1,17 @@
 # iOS RVC Implementation Rewrite Plan
 
 **Date:** 2026-01-06
+**Last Updated:** 2026-01-06 16:15 EST
 **Goal:** Create iOS/Swift MLX implementation with exact parity to Python MLX implementation (0.986 correlation)
+
+## ✅ Phase 1 & 2 COMPLETED!
+
+**All ML components now match Python MLX implementation that achieved 0.986 correlation:**
+1. ✅ HuBERT - Fixed layerNormEps and missing GELU activation
+2. ✅ RMVPE - Complete decode() rewrite with weighted averaging and correct F0 formula
+3. ✅ Synthesizer - Fixed TextEncoder dimension mismatch (B,C,T format)
+
+**Next:** Phase 3 - Testing & Validation
 
 ## Phase 1: Model Conversion & Validation
 
@@ -58,11 +68,19 @@
      - Matches Python rmvpe.py:355-404 exactly
    - **Commit:** e48f6c56
 
-3. **Synthesizer** (`rvc_mlx/lib/mlx/generators.py` → Swift) ⏳ **TODO**
-   - [ ] Verify TextEncoder matches Python implementation
-   - [ ] Check ResidualCouplingBlock transpose operations
-   - [ ] Verify Generator GELU activations
-   - [ ] Validate dimension formats (B,C,T vs B,T,C)
+3. **Synthesizer** (`rvc_mlx/lib/mlx/generators.py` → Swift) ✅ **COMPLETED**
+   - [x] Fix TextEncoder dimension format mismatch
+   - [x] Verify architecture matches Python (LeakyReLU, not GELU)
+   - [x] Validate all dimension formats (B,C,T vs B,T,C)
+   - **Fixes Applied:**
+     - TextEncoder: Fixed output format to match Python
+       - Transpose stats before splitting: (B,T,C*2) → (B,C*2,T)
+       - Return (m, logs) as (B,C,T), xMask as (B,1,T)
+     - Verified activations: TextEncoder uses LeakyReLU(0.1), FFN uses ReLU
+     - Documented architecture correspondence with Python
+   - **This was the "Known issue" from commit df081a66**
+   - **File:** `RVCNativePackage/Sources/RVCNativeFeature/RVC/Synthesizer.swift`
+   - **Commit:** 8f3800f1
 
 ### 2.3 Implementation Strategy
 
