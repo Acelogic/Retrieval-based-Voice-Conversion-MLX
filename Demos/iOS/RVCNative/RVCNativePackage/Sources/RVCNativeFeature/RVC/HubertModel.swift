@@ -3,6 +3,24 @@ import MLX
 import MLXNN
 import MLXRandom
 
+/// HuBERT Model Implementation for RVC
+///
+/// This is a Swift/MLX port of the Python MLX implementation in rvc_mlx/lib/mlx/hubert.py
+///
+/// CRITICAL FIXES APPLIED:
+/// 1. layerNormEps: 1e-5 (matches Python, was incorrectly 1e-12)
+/// 2. HubertPositionalConvEmbedding: Added GELU activation after conv (line 338 in Python)
+/// 3. GELU activation: Using precise GELU (approx='none' in Python)
+///
+/// Architecture:
+/// - Feature Extractor: 7 CNN layers (1 with GroupNorm, 6 without)
+/// - Feature Projection: LayerNorm + Linear (512 -> 768)
+/// - Positional Conv Embedding: Grouped Conv1d (groups=16, kernel=128)
+/// - Transformer Encoder: 12 layers of MultiHeadAttention + FFN
+/// - Final Projection: Linear (768 -> 256) for RVC
+///
+/// Reference: rvc_mlx/lib/mlx/hubert.py
+
 public struct HubertConfig: Codable {
     public var vocabSize: Int = 32
     public var hiddenSize: Int = 768
@@ -15,12 +33,12 @@ public struct HubertConfig: Codable {
     public var maxPositionEmbeddings: Int = 512
     public var typeVocabSize: Int = 2
     public var initializerRange: Float = 0.02
-    public var layerNormEps: Float = 1e-12
+    public var layerNormEps: Float = 1e-5  // CRITICAL: Must match Python (was 1e-12)
     public var padTokenId: Int = 1
     public var bosTokenId: Int = 0
     public var eosTokenId: Int = 2
     public var classifierProjSize: Int = 256
-    
+
     public init() {}
 }
 
@@ -87,14 +105,16 @@ class HubertFeedForward: Module {
     let intermediate_dense: Linear
     let output_dense: Linear
     let act: GELU
-    
+
     init(config: HubertConfig) {
         self.intermediate_dense = Linear(config.hiddenSize, config.intermediateSize)
         self.output_dense = Linear(config.intermediateSize, config.hiddenSize)
+        // CRITICAL: Must use precise GELU (not approximation)
+        // Python: nn.GELU() defaults to approx='none'
         self.act = GELU()
         super.init()
     }
-    
+
     func callAsFunction(_ hiddenStates: MLXArray) -> MLXArray {
         var x = intermediate_dense(hiddenStates)
         x = act(x)
@@ -135,22 +155,33 @@ class HubertPositionalConvEmbedding: Module {
     let bias: MLXArray
     let groups: Int = 16
     let padding: Int = 64
-    
+
     init(config: HubertConfig) {
         let hiddenSize = config.hiddenSize
         let kernelSize = 128
         let inChannelsPerGroup = hiddenSize / self.groups
-        
+
         self.weight = MLXArray.zeros([hiddenSize, kernelSize, inChannelsPerGroup])
         self.bias = MLXArray.zeros([hiddenSize])
         super.init()
     }
-    
+
     func callAsFunction(_ hiddenStates: MLXArray) -> MLXArray {
+        // Conv1d with grouped convolution
         var out = MLX.conv1d(hiddenStates, weight, stride: 1, padding: padding, groups: groups)
+
+        // Add bias
         out = out + bias
+
+        // Crop: Remove last time step (kernel=128 is even, remove 1)
         let L = out.shape[1]
         out = out[0..., 0..<(L-1), 0...]
+
+        // CRITICAL: Apply GELU activation (was missing in old implementation!)
+        // This matches Python line 338: out = nn.gelu(out)
+        out = gelu(out)
+
+        // Residual connection
         return out + hiddenStates
     }
 }
@@ -159,7 +190,7 @@ class HubertGroupNormConvLayer: Module {
     let conv: MLXNN.Conv1d
     let layer_norm: GroupNorm
     let activation: GELU
-    
+
     init(config: HubertConfig, inChannels: Int, outChannels: Int, kernelSize: Int, stride: Int) {
         self.conv = MLXNN.Conv1d(
             inputChannels: inChannels,
@@ -170,14 +201,15 @@ class HubertGroupNormConvLayer: Module {
             bias: false
         )
         self.layer_norm = GroupNorm(groupCount: outChannels, dimensions: outChannels, affine: true)
+        // CRITICAL: Precise GELU activation (not approximation)
         self.activation = GELU()
         super.init()
     }
-    
+
     func callAsFunction(_ hiddenStates: MLXArray) -> MLXArray {
         var x = conv(hiddenStates)
         x = layer_norm(x)
-        x = activation(x)
+        x = activation(x)  // Apply GELU
         return x
     }
 }
@@ -185,7 +217,7 @@ class HubertGroupNormConvLayer: Module {
 class HubertNoLayerNormConvLayer: Module {
     let conv: MLXNN.Conv1d
     let activation: GELU
-    
+
     init(config: HubertConfig, inChannels: Int, outChannels: Int, kernelSize: Int, stride: Int) {
         self.conv = MLXNN.Conv1d(
             inputChannels: inChannels,
@@ -195,13 +227,14 @@ class HubertNoLayerNormConvLayer: Module {
             padding: 0,
             bias: false
         )
+        // CRITICAL: Precise GELU activation (not approximation)
         self.activation = GELU()
         super.init()
     }
-    
+
     func callAsFunction(_ hiddenStates: MLXArray) -> MLXArray {
         var x = conv(hiddenStates)
-        x = activation(x)
+        x = activation(x)  // Apply GELU
         return x
     }
 }
