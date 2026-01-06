@@ -53,8 +53,9 @@ def get_config():
 def run_infer_script(
     pitch: int,
     index_rate: float,
-    volume_envelope: float,
+    volume_envelope: int,
     protect: float,
+    hop_length: int,
     f0_method: str,
     input_path: str,
     output_path: str,
@@ -63,11 +64,10 @@ def run_infer_script(
     split_audio: bool,
     f0_autotune: bool,
     f0_autotune_strength: float,
-    proposed_pitch: bool,
-    proposed_pitch_threshold: float,
     clean_audio: bool,
     clean_strength: float,
     export_format: str,
+    f0_file: str,
     embedder_model: str,
     embedder_model_custom: str = None,
     formant_shifting: bool = False,
@@ -110,28 +110,27 @@ def run_infer_script(
     delay_feedback: float = 0.0,
     delay_mix: float = 0.5,
     sid: int = 0,
-    backend: str = "torch",
 ):
     kwargs = {
         "audio_input_path": input_path,
         "audio_output_path": output_path,
         "model_path": pth_path,
         "index_path": index_path,
-        "volume_envelope": volume_envelope,
         "pitch": pitch,
         "index_rate": index_rate,
+        "volume_envelope": volume_envelope,
         "protect": protect,
+        "hop_length": hop_length,
         "f0_method": f0_method,
         "pth_path": pth_path,
         "index_path": index_path,
         "split_audio": split_audio,
         "f0_autotune": f0_autotune,
         "f0_autotune_strength": f0_autotune_strength,
-        "proposed_pitch": proposed_pitch,
-        "proposed_pitch_threshold": proposed_pitch_threshold,
         "clean_audio": clean_audio,
         "clean_strength": clean_strength,
         "export_format": export_format,
+        "f0_file": f0_file,
         "embedder_model": embedder_model,
         "embedder_model_custom": embedder_model_custom,
         "post_process": post_process,
@@ -175,11 +174,7 @@ def run_infer_script(
         "delay_mix": delay_mix,
         "sid": sid,
     }
-    if backend == "mlx":
-        from rvc.infer.infer_mlx import VoiceConverterMLXPure
-        infer_pipeline = VoiceConverterMLXPure()
-    else:
-        infer_pipeline = import_voice_converter()
+    infer_pipeline = import_voice_converter()
     infer_pipeline.convert_audio(
         **kwargs,
     )
@@ -192,8 +187,9 @@ def run_infer_script(
 def run_batch_infer_script(
     pitch: int,
     index_rate: float,
-    volume_envelope: float,
+    volume_envelope: int,
     protect: float,
+    hop_length: int,
     f0_method: str,
     input_folder: str,
     output_folder: str,
@@ -202,11 +198,10 @@ def run_batch_infer_script(
     split_audio: bool,
     f0_autotune: bool,
     f0_autotune_strength: float,
-    proposed_pitch: bool,
-    proposed_pitch_threshold: float,
     clean_audio: bool,
     clean_strength: float,
     export_format: str,
+    f0_file: str,
     embedder_model: str,
     embedder_model_custom: str = None,
     formant_shifting: bool = False,
@@ -259,17 +254,17 @@ def run_batch_infer_script(
         "index_rate": index_rate,
         "volume_envelope": volume_envelope,
         "protect": protect,
+        "hop_length": hop_length,
         "f0_method": f0_method,
         "pth_path": pth_path,
         "index_path": index_path,
         "split_audio": split_audio,
         "f0_autotune": f0_autotune,
         "f0_autotune_strength": f0_autotune_strength,
-        "proposed_pitch": proposed_pitch,
-        "proposed_pitch_threshold": proposed_pitch_threshold,
         "clean_audio": clean_audio,
         "clean_strength": clean_strength,
         "export_format": export_format,
+        "f0_file": f0_file,
         "embedder_model": embedder_model,
         "embedder_model_custom": embedder_model_custom,
         "post_process": post_process,
@@ -329,8 +324,9 @@ def run_tts_script(
     tts_rate: int,
     pitch: int,
     index_rate: float,
-    volume_envelope: float,
+    volume_envelope: int,
     protect: float,
+    hop_length: int,
     f0_method: str,
     output_tts_path: str,
     output_rvc_path: str,
@@ -339,11 +335,10 @@ def run_tts_script(
     split_audio: bool,
     f0_autotune: bool,
     f0_autotune_strength: float,
-    proposed_pitch: bool,
-    proposed_pitch_threshold: float,
     clean_audio: bool,
     clean_strength: float,
     export_format: str,
+    f0_file: str,
     embedder_model: str,
     embedder_model_custom: str = None,
     sid: int = 0,
@@ -377,6 +372,7 @@ def run_tts_script(
         index_rate=index_rate,
         volume_envelope=volume_envelope,
         protect=protect,
+        hop_length=hop_length,
         f0_method=f0_method,
         audio_input_path=output_tts_path,
         audio_output_path=output_rvc_path,
@@ -385,11 +381,10 @@ def run_tts_script(
         split_audio=split_audio,
         f0_autotune=f0_autotune,
         f0_autotune_strength=f0_autotune_strength,
-        proposed_pitch=proposed_pitch,
-        proposed_pitch_threshold=proposed_pitch_threshold,
         clean_audio=clean_audio,
         clean_strength=clean_strength,
         export_format=export_format,
+        f0_file=f0_file,
         embedder_model=embedder_model,
         embedder_model_custom=embedder_model_custom,
         sid=sid,
@@ -427,7 +422,6 @@ def run_preprocess_script(
     clean_strength: float,
     chunk_len: float,
     overlap_len: float,
-    normalization_mode: str = "none",
 ):
     preprocess_script_path = os.path.join("rvc", "train", "preprocess", "preprocess.py")
     command = [
@@ -446,7 +440,6 @@ def run_preprocess_script(
                 clean_strength,
                 chunk_len,
                 overlap_len,
-                normalization_mode,
             ],
         ),
     ]
@@ -458,6 +451,7 @@ def run_preprocess_script(
 def run_extract_script(
     model_name: str,
     f0_method: str,
+    hop_length: int,
     cpu_cores: int,
     gpu: int,
     sample_rate: int,
@@ -477,6 +471,7 @@ def run_extract_script(
             [
                 model_path,
                 f0_method,
+                hop_length,
                 cpu_cores,
                 gpu,
                 sample_rate,
@@ -670,6 +665,14 @@ def parse_arguments():
         choices=[i / 1000.0 for i in range(0, 501)],
         default=0.33,
     )
+    hop_length_description = "Only applicable for the Crepe pitch extraction method. Determines the time it takes for the system to react to a significant pitch change. Smaller values require more processing time but can lead to better pitch accuracy."
+    infer_parser.add_argument(
+        "--hop_length",
+        type=int,
+        help=hop_length_description,
+        choices=range(1, 513),
+        default=128,
+    )
     f0_method_description = "Choose the pitch extraction algorithm for the conversion. 'rmvpe' is the default and generally recommended."
     infer_parser.add_argument(
         "--f0_method",
@@ -731,22 +734,6 @@ def parse_arguments():
         choices=[(i / 10) for i in range(11)],
         default=1.0,
     )
-    proposed_pitch_description = "Proposed Pitch"
-    infer_parser.add_argument(
-        "--proposed_pitch",
-        type=bool,
-        help=proposed_pitch_description,
-        choices=[True, False],
-        default=False,
-    )
-    proposed_pitch_threshold_description = "Proposed Pitch Threshold"
-    infer_parser.add_argument(
-        "--proposed_pitch_threshold",
-        type=float,
-        help=proposed_pitch_threshold_description,
-        choices=[i for i in range(50, 1200)],
-        default=155.0,
-    )
     clean_audio_description = "Clean the output audio using noise reduction algorithms. Recommended for speech conversions."
     infer_parser.add_argument(
         "--clean_audio",
@@ -771,13 +758,6 @@ def parse_arguments():
         choices=["WAV", "MP3", "FLAC", "OGG", "M4A"],
         default="WAV",
     )
-    infer_parser.add_argument(
-        "--backend",
-        type=str,
-        help="Inference backend to use.",
-        choices=["torch", "mlx"],
-        default="torch",
-    )
     embedder_model_description = (
         "Choose the model used for generating speaker embeddings."
     )
@@ -787,8 +767,6 @@ def parse_arguments():
         help=embedder_model_description,
         choices=[
             "contentvec",
-            "spin",
-            "spin-v2",
             "chinese-hubert-base",
             "japanese-hubert-base",
             "korean-hubert-base",
@@ -801,6 +779,13 @@ def parse_arguments():
         "--embedder_model_custom",
         type=str,
         help=embedder_model_custom_description,
+        default=None,
+    )
+    f0_file_description = "Full path to an external F0 file (.f0). This allows you to use pre-computed pitch values for the input audio."
+    infer_parser.add_argument(
+        "--f0_file",
+        type=str,
+        help=f0_file_description,
         default=None,
     )
     formant_shifting_description = "Apply formant shifting to the input audio. This can help adjust the timbre of the voice."
@@ -1168,7 +1153,6 @@ def parse_arguments():
         required=False,
     )
 
-
     # Parser for 'batch_infer' mode
     batch_infer_parser = subparsers.add_parser(
         "batch_infer",
@@ -1201,6 +1185,13 @@ def parse_arguments():
         help=protect_description,
         choices=[i / 1000.0 for i in range(0, 501)],
         default=0.33,
+    )
+    batch_infer_parser.add_argument(
+        "--hop_length",
+        type=int,
+        help=hop_length_description,
+        choices=range(1, 513),
+        default=128,
     )
     batch_infer_parser.add_argument(
         "--f0_method",
@@ -1257,22 +1248,6 @@ def parse_arguments():
         choices=[(i / 10) for i in range(11)],
         default=1.0,
     )
-    proposed_pitch_description = "Proposed Pitch adjustment"
-    batch_infer_parser.add_argument(
-        "--proposed_pitch",
-        type=bool,
-        help=proposed_pitch_description,
-        choices=[True, False],
-        default=False,
-    )
-    proposed_pitch_threshold_description = "Proposed Pitch adjustment value"
-    batch_infer_parser.add_argument(
-        "--proposed_pitch_threshold",
-        type=float,
-        help=proposed_pitch_threshold_description,
-        choices=[i for i in range(50, 1200)],
-        default=155.0,
-    )
     batch_infer_parser.add_argument(
         "--clean_audio",
         type=lambda x: bool(strtobool(x)),
@@ -1300,8 +1275,6 @@ def parse_arguments():
         help=embedder_model_description,
         choices=[
             "contentvec",
-            "spin",
-            "spin-v2",
             "chinese-hubert-base",
             "japanese-hubert-base",
             "korean-hubert-base",
@@ -1313,6 +1286,12 @@ def parse_arguments():
         "--embedder_model_custom",
         type=str,
         help=embedder_model_custom_description,
+        default=None,
+    )
+    batch_infer_parser.add_argument(
+        "--f0_file",
+        type=str,
+        help=f0_file_description,
         default=None,
     )
     batch_infer_parser.add_argument(
@@ -1688,6 +1667,13 @@ def parse_arguments():
         default=0.33,
     )
     tts_parser.add_argument(
+        "--hop_length",
+        type=int,
+        help=hop_length_description,
+        choices=range(1, 513),
+        default=128,
+    )
+    tts_parser.add_argument(
         "--f0_method",
         type=str,
         help=f0_method_description,
@@ -1742,22 +1728,6 @@ def parse_arguments():
         choices=[(i / 10) for i in range(11)],
         default=1.0,
     )
-    proposed_pitch_description = "Proposed Pitch adjustment"
-    tts_parser.add_argument(
-        "--proposed_pitch",
-        type=bool,
-        help=proposed_pitch_description,
-        choices=[True, False],
-        default=False,
-    )
-    proposed_pitch_threshold_description = "Proposed Pitch adjustment value"
-    tts_parser.add_argument(
-        "--proposed_pitch_threshold",
-        type=float,
-        help=proposed_pitch_threshold_description,
-        choices=[i for i in range(100, 500)],
-        default=155.0,
-    )
     tts_parser.add_argument(
         "--clean_audio",
         type=lambda x: bool(strtobool(x)),
@@ -1785,8 +1755,6 @@ def parse_arguments():
         help=embedder_model_description,
         choices=[
             "contentvec",
-            "spin",
-            "spin-v2",
             "chinese-hubert-base",
             "japanese-hubert-base",
             "korean-hubert-base",
@@ -1798,6 +1766,12 @@ def parse_arguments():
         "--embedder_model_custom",
         type=str,
         help=embedder_model_custom_description,
+        default=None,
+    )
+    tts_parser.add_argument(
+        "--f0_file",
+        type=str,
+        help=f0_file_description,
         default=None,
     )
 
@@ -1872,14 +1846,6 @@ def parse_arguments():
         default=0.3,
         required=False,
     )
-    preprocess_parser.add_argument(
-        "--normalization_mode",
-        type=str,
-        help="Normalization mode.",
-        choices=["none", "pre", "post"],
-        default="none",
-        required=False,
-    )
 
     # Parser for 'extract' mode
     extract_parser = subparsers.add_parser(
@@ -1896,9 +1862,15 @@ def parse_arguments():
             "crepe",
             "crepe-tiny",
             "rmvpe",
-            "fcpe",
         ],
         default="rmvpe",
+    )
+    extract_parser.add_argument(
+        "--hop_length",
+        type=int,
+        help="Hop length for feature extraction. Only applicable for Crepe pitch extraction.",
+        choices=range(1, 513),
+        default=128,
     )
     extract_parser.add_argument(
         "--cpu_cores",
@@ -1926,8 +1898,6 @@ def parse_arguments():
         help=embedder_model_description,
         choices=[
             "contentvec",
-            "spin",
-            "spin-v2",
             "chinese-hubert-base",
             "japanese-hubert-base",
             "korean-hubert-base",
@@ -2198,6 +2168,7 @@ def main():
                 index_rate=args.index_rate,
                 volume_envelope=args.volume_envelope,
                 protect=args.protect,
+                hop_length=args.hop_length,
                 f0_method=args.f0_method,
                 input_path=args.input_path,
                 output_path=args.output_path,
@@ -2206,18 +2177,16 @@ def main():
                 split_audio=args.split_audio,
                 f0_autotune=args.f0_autotune,
                 f0_autotune_strength=args.f0_autotune_strength,
-                proposed_pitch=args.proposed_pitch,
-                proposed_pitch_threshold=args.proposed_pitch_threshold,
                 clean_audio=args.clean_audio,
                 clean_strength=args.clean_strength,
                 export_format=args.export_format,
                 embedder_model=args.embedder_model,
                 embedder_model_custom=args.embedder_model_custom,
+                f0_file=args.f0_file,
                 formant_shifting=args.formant_shifting,
                 formant_qfrency=args.formant_qfrency,
                 formant_timbre=args.formant_timbre,
                 sid=args.sid,
-                backend=args.backend,
                 post_process=args.post_process,
                 reverb=args.reverb,
                 pitch_shift=args.pitch_shift,
@@ -2261,6 +2230,7 @@ def main():
                 index_rate=args.index_rate,
                 volume_envelope=args.volume_envelope,
                 protect=args.protect,
+                hop_length=args.hop_length,
                 f0_method=args.f0_method,
                 input_folder=args.input_folder,
                 output_folder=args.output_folder,
@@ -2269,13 +2239,12 @@ def main():
                 split_audio=args.split_audio,
                 f0_autotune=args.f0_autotune,
                 f0_autotune_strength=args.f0_autotune_strength,
-                proposed_pitch=args.proposed_pitch,
-                proposed_pitch_threshold=args.proposed_pitch_threshold,
                 clean_audio=args.clean_audio,
                 clean_strength=args.clean_strength,
                 export_format=args.export_format,
                 embedder_model=args.embedder_model,
                 embedder_model_custom=args.embedder_model_custom,
+                f0_file=args.f0_file,
                 formant_shifting=args.formant_shifting,
                 formant_qfrency=args.formant_qfrency,
                 formant_timbre=args.formant_timbre,
@@ -2327,6 +2296,7 @@ def main():
                 index_rate=args.index_rate,
                 volume_envelope=args.volume_envelope,
                 protect=args.protect,
+                hop_length=args.hop_length,
                 f0_method=args.f0_method,
                 output_tts_path=args.output_tts_path,
                 output_rvc_path=args.output_rvc_path,
@@ -2335,13 +2305,12 @@ def main():
                 split_audio=args.split_audio,
                 f0_autotune=args.f0_autotune,
                 f0_autotune_strength=args.f0_autotune_strength,
-                proposed_pitch=args.proposed_pitch,
-                proposed_pitch_threshold=args.proposed_pitch_threshold,
                 clean_audio=args.clean_audio,
                 clean_strength=args.clean_strength,
                 export_format=args.export_format,
                 embedder_model=args.embedder_model,
                 embedder_model_custom=args.embedder_model_custom,
+                f0_file=args.f0_file,
             )
         elif args.mode == "preprocess":
             run_preprocess_script(
@@ -2355,12 +2324,12 @@ def main():
                 clean_strength=args.noise_reduction_strength,
                 chunk_len=args.chunk_len,
                 overlap_len=args.overlap_len,
-                normalization_mode=args.normalization_mode,
             )
         elif args.mode == "extract":
             run_extract_script(
                 model_name=args.model_name,
                 f0_method=args.f0_method,
+                hop_length=args.hop_length,
                 cpu_cores=args.cpu_cores,
                 gpu=args.gpu,
                 sample_rate=args.sample_rate,

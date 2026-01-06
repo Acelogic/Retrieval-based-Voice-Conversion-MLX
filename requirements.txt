@@ -24,11 +24,13 @@ numba
 torch==2.4.0; sys_platform == 'darwin'
 torchaudio==2.4.0; sys_platform == 'darwin'
 torchvision==0.19.0; sys_platform == 'darwin'
-torchcrepe
-torchfcpe
+numba==0.60.0 # Pin to avoid numpy 2.0 conflicts if needed
+faiss-cpu
+
 einops
 transformers
 beautifulsoup4
+llvmlite
 
 # Visualization and UI
 matplotlib
@@ -40,4 +42,5 @@ certifi; sys_platform == 'darwin'
 antlr4-python3-runtime
 edge-tts
 webrtcvad
+mlx
 mlx; sys_platform == 'darwin'

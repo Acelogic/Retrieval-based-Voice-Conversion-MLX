@@ -26,7 +26,7 @@ Intermediates.noindex/
 *.xcresult/
 *.xccheckout
 *.xcscmblueprint
-xcuserdata/
+/xcuserdata/
 *.orig
 
 # Logs
@@ -38,10 +38,14 @@ xcuserdata/
 *.onnx
 *.index
 *.safetensors
+*.npz
 assets/audios/
 assets/datasets/
 logs/
 rvc/models/
+rvc_mlx/models/
+weights/
+test-audio/
 
 # Media
 *.mp3
@@ -50,6 +54,7 @@ rvc/models/
 *.m4a
 *.wav
 *.png
+
 
 # Misc
 *.txt

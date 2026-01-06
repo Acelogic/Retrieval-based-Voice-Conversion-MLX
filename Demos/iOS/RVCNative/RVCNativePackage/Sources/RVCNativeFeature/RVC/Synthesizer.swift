@@ -430,17 +430,20 @@ public class Synthesizer: Module {
         
         // Encode features
         let (m_p, logs_p, xMask) = enc_p(phone, pitch: pitch, lengths: phoneLengths)
-        print("DEBUG: TextEncoder output - m_p: \(m_p.shape), logs_p: \(logs_p.shape)")
+        print("DEBUG: TextEncoder output - m_p: \(m_p.shape) [\(m_p.min().item(Float.self))...\(m_p.max().item(Float.self))], logs_p: \(logs_p.shape) [\(logs_p.min().item(Float.self))...\(logs_p.max().item(Float.self))]")
 
         // Sample from encoded distribution
         let xMaskExpanded = xMask.expandedDimensions(axis: -1)
         let z_p = (m_p + exp(logs_p) * MLXRandom.normal(m_p.shape).asType(m_p.dtype) * 0.66666) * xMaskExpanded
+        print("DEBUG: z_p stats: min \(z_p.min().item(Float.self)), max \(z_p.max().item(Float.self))")
         
         // Flow reverse pass
         let z = flow(z_p, xMask: xMaskExpanded, g: g, reverse: true)
+        print("DEBUG: z (after flow) stats: min \(z.min().item(Float.self)), max \(z.max().item(Float.self))")
         
         // Decode to audio
         let output = dec(z * xMaskExpanded, f0: nsff0 ?? MLX.zeros([phone.shape[0], phone.shape[1], 1]), g: g)
+        print("DEBUG: Generator output stats: min \(output.min().item(Float.self)), max \(output.max().item(Float.self))")
         
         return output
     }

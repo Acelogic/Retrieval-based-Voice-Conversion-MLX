@@ -71,17 +71,12 @@ def load_audio_infer(
         if not os.path.isfile(file):
             raise FileNotFoundError(f"File not found: {file}")
         audio, sr = sf.read(file)
-        
-        # Convert to mono using numpy (no librosa)
         if len(audio.shape) > 1:
-            audio = np.mean(audio, axis=1)  # Average channels for mono
-            
-        # Resample using scipy (no librosa)
+            audio = librosa.to_mono(audio.T)
         if sr != sample_rate:
-            from scipy import signal
-            num_samples = int(len(audio) * sample_rate / sr)
-            audio = signal.resample(audio, num_samples)
-            
+            audio = librosa.resample(
+                audio, orig_sr=sr, target_sr=sample_rate, res_type="soxr_vhq"
+            )
         if formant_shifting:
             formant_qfrency = kwargs.get("formant_qfrency", 0.8)
             formant_timbre = kwargs.get("formant_timbre", 0.8)

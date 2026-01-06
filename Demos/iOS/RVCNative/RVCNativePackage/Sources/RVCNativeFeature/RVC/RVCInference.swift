@@ -298,6 +298,6 @@ import MLXNN
                 sid: sid
             )
             
-            return audioOut // [1, T_out, 1]
+        return audioOut // [1, T_out, 1]
         }
     }
