@@ -123,11 +123,17 @@ class RVCEncoder: Module {
         self.nLayers = nLayers
         self.drop = MLXNN.Dropout(p: pDropout)
         
-        for _ in 0..<nLayers {
-            attn_layers.append(MultiHeadAttention(channels: hiddenChannels, outChannels: hiddenChannels, nHeads: nHeads, pDropout: pDropout, windowSize: windowSize))
-            norm_layers_1.append(MLXNN.LayerNorm(dimensions: hiddenChannels))
-            ffn_layers.append(FFN(inChannels: hiddenChannels, outChannels: hiddenChannels, filterChannels: filterChannels, kernelSize: kernelSize, pDropout: pDropout))
-            norm_layers_2.append(MLXNN.LayerNorm(dimensions: hiddenChannels))
+        self.attn_layers = (0..<nLayers).map { _ in
+            MultiHeadAttention(channels: hiddenChannels, outChannels: hiddenChannels, nHeads: nHeads, pDropout: pDropout, windowSize: windowSize)
+        }
+        self.norm_layers_1 = (0..<nLayers).map { _ in
+            MLXNN.LayerNorm(dimensions: hiddenChannels)
+        }
+        self.ffn_layers = (0..<nLayers).map { _ in
+            FFN(inChannels: hiddenChannels, outChannels: hiddenChannels, filterChannels: filterChannels, kernelSize: kernelSize, pDropout: pDropout)
+        }
+        self.norm_layers_2 = (0..<nLayers).map { _ in
+            MLXNN.LayerNorm(dimensions: hiddenChannels)
         }
         
         super.init()
@@ -248,9 +254,9 @@ class WaveNet: Module {
     init(hiddenChannels: Int, kernelSize: Int, dilationRate: Int, nLayers: Int, ginChannels: Int) {
         self.nLayers = nLayers
         
-        for i in 0..<nLayers {
+        self.layers = (0..<nLayers).map { i in
             let dilation = Int(pow(Double(dilationRate), Double(i)))
-            layers.append(WaveNetLayer(hiddenChannels: hiddenChannels, kernelSize: kernelSize, dilation: dilation, ginChannels: ginChannels))
+            return WaveNetLayer(hiddenChannels: hiddenChannels, kernelSize: kernelSize, dilation: dilation, ginChannels: ginChannels)
         }
         
         super.init()
@@ -334,8 +340,8 @@ class ResidualCouplingBlock: Module {
     init(channels: Int, hiddenChannels: Int, kernelSize: Int, dilationRate: Int, nLayers: Int, nFlows: Int = 4, ginChannels: Int) {
         self.nFlows = nFlows
         
-        for _ in 0..<nFlows {
-            flows.append(ResidualCouplingLayer(channels: channels, hiddenChannels: hiddenChannels, kernelSize: kernelSize, dilationRate: dilationRate, nLayers: nLayers, ginChannels: ginChannels, meanOnly: true))
+        self.flows = (0..<nFlows).map { _ in
+            ResidualCouplingLayer(channels: channels, hiddenChannels: hiddenChannels, kernelSize: kernelSize, dilationRate: dilationRate, nLayers: nLayers, ginChannels: ginChannels, meanOnly: true)
         }
         
         super.init()
@@ -348,11 +354,8 @@ class ResidualCouplingBlock: Module {
         
         for i in iterator {
             h = flows[i](h, xMask: xMask, g: g, reverse: reverse)
-            // Flip channels - reverse the channel dimension
-            // MLX doesn't have flip, so we manually reverse using gather
-            let C = h.shape[2]
-            let indices = MLXArray((0..<C).reversed())
-            h = h[0..., 0..., indices]
+            // Flip channels (axis 2)
+            h = h[0..., 0..., .stride(by: -1)]
         }
         
         return h
@@ -382,8 +385,8 @@ public class Synthesizer: Module {
         useF0: Bool = true
     ) {
         self.useF0 = useF0
-        
-        // TextEncoder: transforms 768-dim HuBERT -> 192-dim
+
+        // TextEncoder: transforms 768-dim HuBERT -> 192-dim latent
         self.enc_p = TextEncoder(
             outChannels: interChannels,
             hiddenChannels: hiddenChannels,
@@ -427,7 +430,8 @@ public class Synthesizer: Module {
         
         // Encode features
         let (m_p, logs_p, xMask) = enc_p(phone, pitch: pitch, lengths: phoneLengths)
-        
+        print("DEBUG: TextEncoder output - m_p: \(m_p.shape), logs_p: \(logs_p.shape)")
+
         // Sample from encoded distribution
         let xMaskExpanded = xMask.expandedDimensions(axis: -1)
         let z_p = (m_p + exp(logs_p) * MLXRandom.normal(m_p.shape).asType(m_p.dtype) * 0.66666) * xMaskExpanded

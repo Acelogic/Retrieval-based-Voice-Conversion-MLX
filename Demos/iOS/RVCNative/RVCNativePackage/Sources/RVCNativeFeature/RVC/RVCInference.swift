@@ -13,8 +13,7 @@ import MLXNN
         public var onLog: ((String) -> Void)?
         
         var hubertModel: HubertModel?
-        var featureProjection: MLXNN.Linear?  // 768 -> 192
-        var generator: Generator?
+        var synthesizer: Synthesizer?
         var rmvpe: RMVPE?
         
         private func log(_ message: String) {
@@ -46,52 +45,53 @@ import MLXNN
             }
             self.hubertModel?.update(parameters: ModuleParameters.unflattened(newParams))
             
-            // 2. Load Generator (simplified approach - just Generator + feature projection)
-            log("RVCInference: Loading Generator from \(modelURL.lastPathComponent)")
+            // 2. Load Synthesizer (TextEncoder + Flow + Generator)
+            log("RVCInference: Loading Synthesizer from \(modelURL.lastPathComponent)")
             let modelWeights = try MLX.loadArrays(url: modelURL)
+
+            // Note: The Python conversion script already transposes all weights to MLX format
+            // No additional transposition needed here!
+            log("RVCInference: Loaded \(modelWeights.count) weights (already in MLX format)")
             
-            // Auto-transpose Conv1d weights from PyTorch to MLX format
-            var transposedWeights: [String: MLXArray] = [:]
-            var transposedCount = 0
-            for (key, value) in modelWeights {
-                if key.contains(".weight") && value.ndim == 3 {
-                    let shape = value.shape
-                    if shape[2] < shape[1] {
-                        transposedWeights[key] = value.transposed(0, 2, 1)
-                        transposedCount += 1
-                    } else {
-                        transposedWeights[key] = value
+            // Initialize Synthesizer (V2 defaults)
+            self.synthesizer = Synthesizer(
+                interChannels: 192,
+                hiddenChannels: 192,
+                filterChannels: 768,
+                nHeads: 2,
+                nLayers: 6,
+                kernelSize: 3,
+                pDropout: 0.0,
+                embeddingDim: 768,  // Model weights expect 768-dim HuBERT features
+                speakerEmbedDim: 256,
+                ginChannels: 256,
+                useF0: true
+            )
+            
+            // Remap keys for Synthesizer
+            // RVC V2 PyTorch Weights:
+            // enc_p.* -> TextEncoder
+            // dec.* -> Generator
+            // flow.flows.0, 2, 4, 6 -> Flow (indices 0, 1, 2, 3)
+            // emb_g.weight -> Speaker Embedding
+            
+            var synthParams: [String: MLXArray] = [:]
+            for (k, v) in modelWeights {
+                var newK = k
+                if k.hasPrefix("flow.flows.") {
+                    let parts = k.components(separatedBy: ".")
+                    if parts.count >= 3, let oldIdx = Int(parts[2]) {
+                        // PyTorch indices: 0, 2, 4, 6
+                        // Swift indices: 0, 1, 2, 3
+                        let newIdx = oldIdx / 2
+                        newK = (["flow", "flows", String(newIdx)] + parts.dropFirst(3)).joined(separator: ".")
                     }
-                } else {
-                    transposedWeights[key] = value
                 }
-            }
-            log("RVCInference: Transposed \(transposedCount) Conv1d weights")
-            
-            // Create feature projection (768 -> 192 using enc_p.emb_phone weights)
-            self.featureProjection = MLXNN.Linear(768, 192)
-            if let weight = transposedWeights["enc_p.emb_phone.weight"],
-               let bias = transposedWeights["enc_p.emb_phone.bias"] {
-                self.featureProjection?.update(parameters: ModuleParameters.unflattened([
-                    "weight": weight,
-                    "bias": bias
-                ]))
-                log("RVCInference: Loaded feature projection (768->192)")
+                synthParams[newK] = v
             }
             
-            // Create Generator (192 input, with gin_channels for conditioning)
-            self.generator = Generator(inputChannels: 192, ginChannels: 256)
-            
-            // Load Generator weights (dec.* prefix)
-            var genParams: [String: MLXArray] = [:]
-            for (k, v) in transposedWeights {
-                if k.hasPrefix("dec.") {
-                    let newK = String(k.dropFirst(4))
-                    genParams[newK] = v
-                }
-            }
-            self.generator?.update(parameters: ModuleParameters.unflattened(genParams))
-            log("RVCInference: Loaded Generator with \(genParams.count) weight keys")
+            self.synthesizer?.update(parameters: ModuleParameters.unflattened(synthParams))
+            log("RVCInference: Loaded Synthesizer with \(synthParams.count) weight keys")
             
             // 3. Load RMVPE (Optional)
             if let rmvpeURL = rmvpeURL {
@@ -223,58 +223,81 @@ import MLXNN
         }
         
         private func inferChunk(chunk: MLXArray) async throws -> MLXArray {
-            // chunk: [T]
+            // chunk: [T] - 16kHz
              
-            // 1. Hubert Feature Extraction
+            // 1. Hubert Feature Extraction (16kHz -> 50fps)
             let audioInput = chunk.expandedDimensions(axis: 0) // [1, T]
             guard let hubertModel = hubertModel else {
                 throw NSError(domain: "RVCInference", code: 1, userInfo: [NSLocalizedDescriptionKey: "Hubert model missing"])
             }
-            let features = hubertModel(audioInput) // [1, Frames, 768]
-            MLX.eval(features)
-             
-            // 2. Feature Projection (768 -> 192)
-            guard let projection = featureProjection else {
-                throw NSError(domain: "RVCInference", code: 1, userInfo: [NSLocalizedDescriptionKey: "Feature projection missing"])
-            }
-            var projectedFeatures = projection(features)  // [1, Frames, 192]
-            projectedFeatures = leakyRelu(projectedFeatures, negativeSlope: 0.1)
-            MLX.eval(projectedFeatures)
-            
-            // 3. F0 Estimation
+            let hubertFeatures = hubertModel(audioInput) // [1, Frames, 768]
+            MLX.eval(hubertFeatures)
+            log("DEBUG: HuBERT output shape: \(hubertFeatures.shape)")
+
+            // 2. F0 Estimation (16kHz -> 100fps)
             var f0: MLXArray
             if let rmvpe = rmvpe {
                 f0 = rmvpe.infer(audio: chunk, thred: 0.03) // [1, Frames_rmvpe, 1]
             } else {
-                // Fallback: constant F0
-                let frames = features.shape[1] * 2
+                // Fallback: constant F0 (200Hz)
+                // RMVPE produces 100fps, Hubert 50fps. So RMVPE has 2x frames.
+                let frames = hubertFeatures.shape[1] * 2
                 f0 = MLX.full([1, frames, 1], values: MLXArray(200.0))
             }
             MLX.eval(f0)
             
-            // 4. Upsample Features (2x) - simple repeat
-            let N = projectedFeatures.shape[0]
-            let L = projectedFeatures.shape[1]
-            let C = projectedFeatures.shape[2]
+            // 3. Upsample Hubert Features to match F0 (100fps)
+            let N = hubertFeatures.shape[0]
+            let L = hubertFeatures.shape[1]
+            let C = hubertFeatures.shape[2]
             
-            let expanded = projectedFeatures.expandedDimensions(axis: 2)
+            // Simple repeat upsampling: [1, L, 768] -> [1, L, 2, 768] -> [1, L*2, 768]
+            let expanded = hubertFeatures.expandedDimensions(axis: 2)
             let broadcasted = MLX.broadcast(expanded, to: [N, L, 2, C])
-            var phone = broadcasted.reshaped([N, L * 2, C])  // [N, L*2, 192]
+            var phone = broadcasted.reshaped([N, L * 2, C])
+            log("DEBUG: Upsampled phone shape: \(phone.shape)")
+
+            // 4. Coarse Pitch calculation (Hz -> Bucket 1-255)
+            let f0Hz = f0.squeezed(axes: [2]) // [1, L_f0]
+            let f0_min: Float = 50.0
+            let f0_max: Float = 1100.0
+            let f0_mel_min = 1127.0 * Darwin.log(1.0 + Double(f0_min) / 700.0)
+            let f0_mel_max = 1127.0 * Darwin.log(1.0 + Double(f0_max) / 700.0)
+            
+            // MLX Mel calculation: 1127 * ln(1 + f/700)
+            let f0_mel = 1127.0 * MLX.log(1.0 + f0Hz / 700.0)
+            
+            // Bucket quantization
+            var pitch = (f0_mel - f0_mel_min) * (254.0 / (f0_mel_max - f0_mel_min)) + 1.0
+            pitch = MLX.where(f0Hz .<= f0_min, MLXArray(1.0), pitch) 
+            pitch = MLX.maximum(pitch, 1.0)
+            pitch = MLX.minimum(pitch, 255.0)
+            let pitchBuckets = pitch.asType(Int32.self)
             
             // 5. Sync lengths
-            let lenFeat = phone.shape[1]
-            let lenF0 = f0.shape[1]
-            let minLen = min(lenFeat, lenF0)
+            let p_len_val = min(phone.shape[1], f0Hz.shape[1])
+            phone = phone[0..., 0..<p_len_val, 0...]
+            let nsff0 = f0Hz[0..., 0..<p_len_val].expandedDimensions(axis: 2)
+            let pitchFinal = pitchBuckets[0..., 0..<p_len_val]
+            let phoneLengths = MLXArray([Int32(p_len_val)])
             
-            phone = phone[0..., 0..<minLen, 0...]
-            f0 = f0[0..., 0..<minLen, 0...]
-            
-            // 6. Generator
-            guard let generator = generator else {
-                throw NSError(domain: "RVCInference", code: 1, userInfo: [NSLocalizedDescriptionKey: "Generator missing"])
+            // 6. Synthesizer Inference
+            guard let synthesizer = synthesizer else {
+                throw NSError(domain: "RVCInference", code: 1, userInfo: [NSLocalizedDescriptionKey: "Synthesizer missing"])
             }
             
-            let audioOut = generator(phone, f0: f0)
-            return audioOut
+            let sid = MLXArray([Int32(0)]) // Default speaker 0
+
+            log("DEBUG: Before Synthesizer - phone: \(phone.shape), pitch: \(pitchFinal.shape), nsff0: \(nsff0.shape)")
+
+            let audioOut = synthesizer.infer(
+                phone: phone,
+                phoneLengths: phoneLengths,
+                pitch: pitchFinal,
+                nsff0: nsff0,
+                sid: sid
+            )
+            
+            return audioOut // [1, T_out, 1]
         }
     }

@@ -63,7 +63,12 @@ def convert_weights(pth_path):
     
     mlx_dict = {}
     for k, v in np_dict.items():
-        if "conv" in k and "weight" in k and v.ndim == 3:
+        # Check for embeddings first (don't transpose)
+        if "emb" in k and "weight" in k:
+             # Embedding weight (Num, Dim). PyTorch/MLX same.
+             pass
+        # Transpose ALL 3D weights (Conv1d) regardless of key name
+        elif "weight" in k and v.ndim == 3:
              if "ups" in k:
                  # ConvTranspose1d: PyTorch (In, Out, K) -> MLX Conv1d (Out, K, In)
                  # Permute (1, 2, 0)
@@ -72,19 +77,17 @@ def convert_weights(pth_path):
                  # Regular Conv1d: PyTorch (Out, In, K) -> MLX (Out, K, In)
                  # Permute (0, 2, 1)
                  v = v.transpose(0, 2, 1)
-        elif "emb" in k and "weight" in k:
-             # Embedding weight (Num, Dim). PyTorch/MLX same.
-             pass
-        elif "linear" in k and "weight" in k:
-             # Linear weight (Out, In). PyTorch uses x @ W.T + b usually. 
-             # MLX Linear weight is (In, Out). 
-             # Wait, PyTorch nn.Linear stores (Out, In). 
+        # Transpose Linear weights (2D)
+        elif "weight" in k and v.ndim == 2 and "linear" in k.lower():
+             # Linear weight (Out, In). PyTorch uses x @ W.T + b usually.
+             # MLX Linear weight is (In, Out).
+             # Wait, PyTorch nn.Linear stores (Out, In).
              # MLX nn.Linear stores (Out, In)? No, MLX internal is (In, Out).
-             # Let's check MLX docs mental cache: 
+             # Let's check MLX docs mental cache:
              # MLX nn.Linear(input_dims, output_dims). weight is (input_dims, output_dims).
              # So we must transpose PyTorch (Out, In) -> (In, Out).
              v = v.transpose()
-             
+
         mlx_dict[k] = mx.array(v)
         
     return mlx_dict, cpt["config"]
