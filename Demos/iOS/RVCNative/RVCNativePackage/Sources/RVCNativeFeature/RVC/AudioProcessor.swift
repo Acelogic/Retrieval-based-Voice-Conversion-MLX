@@ -43,18 +43,40 @@ final class AudioProcessor: @unchecked Sendable {
     // Save MLXArray to WAV
     func saveAudio(array: MLXArray, url: URL, sampleRate: Double = 40000) throws {
         let count = array.size
-        // Convert to Swift Array
-        // Assuming array is 1D float32
         let samples = array.asArray(Float.self)
         
-        let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: 1, interleaved: false)!
-        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(count))!
+        // 1. Define File Format: Int16 (Standard WAV)
+        // This ensures compatibility with all players
+        let fileSettings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVSampleRateKey: sampleRate,
+            AVNumberOfChannelsKey: 1,
+            AVLinearPCMBitDepthKey: 16,
+            AVLinearPCMIsFloatKey: false,
+            AVLinearPCMIsBigEndianKey: false,
+            AVLinearPCMIsNonInterleaved: false
+        ]
+        
+        // 2. Define Buffer Format: Float32
+        // AVAudioFile processes in Float32 by default
+        let bufferFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: 1, interleaved: false)!
+        let buffer = AVAudioPCMBuffer(pcmFormat: bufferFormat, frameCapacity: AVAudioFrameCount(count))!
         buffer.frameLength = AVAudioFrameCount(count)
         
-        guard let channelData = buffer.floatChannelData?[0] else { return }
-        channelData.initialize(from: samples, count: count)
+        // 3. Fill Buffer (Clamp checks are handled by CoreAudio conversion usually, but safe to clamp)
+        if let channelData = buffer.floatChannelData?[0] {
+             for i in 0..<count {
+                 // conversion to Int16 implies clamping, but since we are keeping it as float
+                 // we just ensure it's in -1...1 range so conversion doesn't overflow weirdly
+                 channelData[i] = min(max(samples[i], -1.0), 1.0)
+             }
+        }
         
-        let file = try AVAudioFile(forWriting: url, settings: format.settings)
+        // 4. Write
+        try? FileManager.default.removeItem(at: url)
+        
+        // Initialize file with Int16 settings, but tell it we will provide Float32 data
+        let file = try AVAudioFile(forWriting: url, settings: fileSettings, commonFormat: .pcmFormatFloat32, interleaved: false)
         try file.write(from: buffer)
     }
     

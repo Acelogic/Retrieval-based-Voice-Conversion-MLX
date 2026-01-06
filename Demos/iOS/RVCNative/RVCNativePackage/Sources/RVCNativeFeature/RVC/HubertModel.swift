@@ -309,7 +309,7 @@ public class HubertModel: Module {
         var x = feature_extractor(inputValues)
         x = feature_projection(x)
         x = encoder(x)
-        x = final_proj(x)
+        // x = final_proj(x) // Skip projection for RVC feature extraction
         return x
     }
 }
