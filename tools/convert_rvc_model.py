@@ -73,10 +73,14 @@ def remap_key_name(key):
     # flow.flows.X...
     if key.startswith("flow.flows."):
         parts = key.split(".")
-        flow_idx = parts[2]
+        flow_idx = int(parts[2])
         
-        # flow.flow_X prefix
-        prefix = f"flow.flow_{flow_idx}"
+        # PyTorch flow list contains [Layer, Flip, Layer, Flip...]
+        # We map Layer indices (0, 2, 4...) to MLX indices (0, 1, 2...)
+        # Flip modules (1, 3, 5...) have no weights usually, but if they did, we'd skip or handle them.
+        
+        real_idx = flow_idx // 2
+        prefix = f"flow.flow_{real_idx}"
         
         rest_parts = parts[3:]
         # map enc.in_layers.Y -> enc.in_layer_Y

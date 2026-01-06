@@ -79,6 +79,12 @@ def remap_keys(weights):
                 rest = parts[3:]
                 new_key = f"flow.flow_{f_idx}.{'.'.join(rest)}"
 
+        # Common layer params: gamma -> weight, beta -> bias for LayerNorm
+        if new_key.endswith(".gamma"):
+            new_key = new_key.replace(".gamma", ".weight")
+        elif new_key.endswith(".beta"):
+            new_key = new_key.replace(".beta", ".bias")
+
         new_weights[new_key] = v
     return new_weights
 
@@ -240,6 +246,7 @@ class RVC_MLX:
         # Load weights
         weights = remap_keys(weights)
         self.net_g.load_weights(list(weights.items()), strict=False)
+        self.net_g.eval() # Disable dropout
         mx.eval(self.net_g.parameters())
         
         self.tgt_sr = sr
@@ -259,6 +266,7 @@ class RVC_MLX:
             
             if os.path.exists(h_path):
                  self.hubert_model.load_weights(h_path, strict=False)
+                 self.hubert_model.eval() # Disable dropout
                  mx.eval(self.hubert_model.parameters())
             else:
                  print(f"Error: Hubert weights not found at {h_path}. Please place hubert_mlx.npz there.")
@@ -272,6 +280,8 @@ class RVC_MLX:
     def load_rmvpe(self):
         print("Loading RMVPE...")
         self.rmvpe_model = RMVPE0Predictor() 
+        if hasattr(self.rmvpe_model, 'model'):
+             self.rmvpe_model.model.eval()
         # RMVPE0Predictor loads weights internally from default path or we can pass path
 
     def infer(self, 
@@ -282,7 +292,9 @@ class RVC_MLX:
               index_path=None, 
               index_rate=0.75, 
               volume_envelope=1.0, 
-              protect=0.5):
+              protect=0.5,
+              f0_autotune=False,
+              f0_autotune_strength=1.0):
               
         print(f"Processing {audio_input}...")
         audio = load_audio(audio_input)
@@ -304,8 +316,8 @@ class RVC_MLX:
             volume_envelope,
             "v2", # version
             protect,
-            False, # f0_autotune
-            1.0, 
+            f0_autotune, 
+            f0_autotune_strength, 
             False,
             155.0
         )

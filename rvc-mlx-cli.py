@@ -85,7 +85,9 @@ def run_infer(
         index_path=index_path if index_path else None,
         index_rate=index_rate,
         volume_envelope=volume_envelope,
-        protect=protect
+        protect=protect,
+        f0_autotune=f0_autotune,
+        f0_autotune_strength=f0_autotune_strength
     )
     
     print(f"Inference done. Saved to {output_path}")
@@ -132,7 +134,9 @@ def run_batch_infer(
             index_path=index_path if index_path else None,
             index_rate=index_rate,
             volume_envelope=volume_envelope,
-            protect=protect
+            protect=protect,
+            f0_autotune=kwargs.get("f0_autotune", False),
+            f0_autotune_strength=kwargs.get("f0_autotune_strength", 1.0)
         )
     print(f"Batch inference complete. Results saved to {output_folder}")
 
@@ -178,6 +182,8 @@ def run_tts(
         index_rate=index_rate,
         volume_envelope=volume_envelope,
         protect=protect,
+        f0_autotune=kwargs.get("f0_autotune", False),
+        f0_autotune_strength=kwargs.get("f0_autotune_strength", 1.0),
         export_format=export_format
     )
 
@@ -251,9 +257,14 @@ def parse_arguments():
     prereq_parser.add_argument("--models", action="store_true")
     prereq_parser.add_argument("--exe", action="store_true")
 
+    # Convert
+    convert_parser = subparsers.add_parser("convert", help="Convert PyTorch model to MLX")
+    convert_parser.add_argument("--model_path", "-i", dest="model_path", type=str, required=True, help="Path to input PyTorch model (.pth)")
+    convert_parser.add_argument("--output_path", "-o", dest="output_path", type=str, required=True, help="Path to output MLX model (.npz)")
+
     # Placeholders for Training (Not yet supported in Pure MLX)
     for cmd in ["preprocess", "extract", "train", "index", "model_information", "model_blender", "tensorboard"]:
-        subparsers.add_parser(cmd, help=f"{cmd.capitalize()} (Not supported in Pure MLX yet)")
+        subparsers.add_parser(cmd, help=f"{cmd.capitalize()} (Not yet supported in Pure MLX)")
 
     # Add other ignored args for compatibility
     for p in [infer_parser, batch_parser, tts_parser]:
@@ -263,6 +274,16 @@ def parse_arguments():
             p.add_argument(arg, type=str, help="Ignored in MLX version")
 
     return parser.parse_args()
+
+def run_convert(model_path, output_path, **kwargs):
+    print(f"Converting model from {model_path} to {output_path}...")
+    try:
+        from tools import convert_rvc_model
+        convert_rvc_model.convert_weights(model_path, output_path)
+    except ImportError:
+        print("Error: Could not import tools.convert_rvc_model. Make sure you are in the project root.")
+    except Exception as e:
+        print(f"Error converting model: {e}")
 
 if __name__ == "__main__":
     args = parse_arguments()
@@ -281,6 +302,8 @@ if __name__ == "__main__":
         model_download_pipeline(args.model_link)
     elif args.mode == "prerequisites":
         prequisites_download_pipeline(args.pretraineds_hifigan, args.models, args.exe)
+    elif args.mode == "convert":
+        run_convert(**vars(args))
     elif args.mode in ["preprocess", "extract", "train", "index", "model_information", "model_blender", "tensorboard"]:
         print(f"The '{args.mode}' subcommand is not yet implemented for the Pure MLX backend.")
     else:

@@ -53,11 +53,8 @@ class MultiHeadAttention(nn.Module):
         return self.conv_o(x)
 
     def attention(self, query, key, value, mask=None):
-        b, d, t_s = key.shape
-        t_t = query.shape[2] # Last dim is time in Conv1d (B, C, T) -> MLX is typically (B, T, C) ... wait
-
-        # CRITICAL: PyTorch Conv1d is (Batch, Channel, Length).
-        # MLX Conv1d is (Batch, Length, Channel).
+        b, t_s, d = key.shape
+        t_t = query.shape[1]
         # Assuming we run input transpositions before calling the model or handle it in the model.
         # RVC PyTorch code typically expects (B, C, T). 
         # For MLX port, we should stick to MLX convention (B, T, C) to use nn.Conv1d efficiently, 

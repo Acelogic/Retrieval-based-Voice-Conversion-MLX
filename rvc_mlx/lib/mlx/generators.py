@@ -72,6 +72,7 @@ class SineGenerator(nn.Module):
         harmonic_scale = mx.arange(1, self.waveform_dim + 1).astype(f0.dtype).reshape(1, 1, -1)
         phase_increments = phase_increments * harmonic_scale
         
+        
         # Random phase
         random_phase = mx.random.uniform(shape=(1, 1, self.waveform_dim)).astype(f0.dtype) 
         # Range? Torch rand is [0,1).
@@ -80,7 +81,7 @@ class SineGenerator(nn.Module):
         # Actually random frequency offset? No, simple phase offset.
         
         # Masking fundamental (idx 0) to 0
-        mask = mx.ones((1, 1, self.waveform_dim), dtype=f0.dtype)
+        # mask = mx.ones((1, 1, self.waveform_dim), dtype=f0.dtype)
         # Can't index assign easily.
         # Use concat: 0 for first, rand for rest.
         idx0 = mx.zeros((1, 1, 1), dtype=f0.dtype)
@@ -107,6 +108,9 @@ class SineGenerator(nn.Module):
         
         noise_amp = voiced_mask * self.noise_std + (1 - voiced_mask) * (self.sine_amp / 3)
         noise = noise_amp * mx.random.normal(sine_waves.shape).astype(sine_waves.dtype)
+        
+        sine_waveforms = sine_waves * voiced_mask + noise
+        return sine_waveforms, voiced_mask, noise
         
         sine_waveforms = sine_waves * voiced_mask + noise
         return sine_waveforms, voiced_mask, noise

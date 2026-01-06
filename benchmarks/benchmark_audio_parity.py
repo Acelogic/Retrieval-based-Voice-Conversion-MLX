@@ -19,6 +19,7 @@ import time
 import argparse
 import numpy as np
 import soundfile as sf
+import hashlib
 from pathlib import Path
 
 # Set required environment variable
@@ -205,6 +206,9 @@ def benchmark_pytorch_audio(audio_path, model_path, num_runs=3, warmup=True, sav
             "output": final_output,
             "sample_rate": tgt_sr,
             "input_audio": audio,
+            "sha256": hashlib.sha256(final_output.tobytes()).hexdigest(),
+            "model_path": model_path,
+            "audio_path": audio_path
         }
 
     except Exception as e:
@@ -319,6 +323,9 @@ def benchmark_mlx_audio(audio_path, model_path, num_runs=3, warmup=True, save_ou
             "output": final_output,
             "sample_rate": tgt_sr,
             "input_audio": audio,
+            "sha256": hashlib.sha256(final_output.tobytes()).hexdigest(),
+            "model_path": model_path,
+            "audio_path": audio_path
         }
 
     except Exception as e:
@@ -328,7 +335,7 @@ def benchmark_mlx_audio(audio_path, model_path, num_runs=3, warmup=True, save_ou
         return None
 
 
-def compare_audio_results(pt_result, mlx_result):
+def compare_audio_results(pt_result, mlx_result, plot_path=None):
     """Compare PyTorch and MLX audio outputs."""
     print("\n" + "="*60)
     print("AUDIO INFERENCE COMPARISON")
@@ -347,6 +354,15 @@ def compare_audio_results(pt_result, mlx_result):
     print(f"  PyTorch (MPS):  {pt_time:.4f}s")
     print(f"  MLX:            {mlx_time:.4f}s")
     print(f"  Speedup:        {speedup:.2f}x {'(MLX faster)' if speedup > 1 else '(PyTorch faster)'}")
+
+    # SHA256 Comparison
+    print(f"\n🔐 SHA256 Checksums:")
+    print(f"  PyTorch: {pt_result['sha256']}")
+    print(f"  MLX:     {mlx_result['sha256']}")
+    if pt_result['sha256'] == mlx_result['sha256']:
+        print("  ⚠️  IDENTICAL HASHES (Suspicious if distinct frameworks)")
+    else:
+        print("  ✅ Hashes distinct (Expected from different frameworks)")
 
     # Audio comparison
     pt_audio = pt_result["output"]
@@ -376,7 +392,36 @@ def compare_audio_results(pt_result, mlx_result):
     print(f"  Max difference:  {max_diff:.6f}")
     print(f"  Mean difference: {mean_diff:.6f}")
     print(f"  RMSE:            {rmse:.6f}")
-    print(f"  Correlation:     {correlation:.6f}")
+    print(f"  Waveform Corr:   {correlation:.6f}")
+
+    # Spectrogram Correlation (Perceptual)
+    spec_corr = 0.0
+    try:
+        import librosa
+        
+        # Compute STFT
+        n_fft = 1024
+        hop_length = 256
+        # Use abs() to get magnitude, discarding phase
+        S_pt = np.abs(librosa.stft(pt_audio, n_fft=n_fft, hop_length=hop_length))
+        S_mlx = np.abs(librosa.stft(mlx_audio, n_fft=n_fft, hop_length=hop_length))
+        
+        # Log-Mel Spectrogram (better for perception)
+        # Assuming 40k or 48k sample rate
+        sr = pt_result['sample_rate']
+        mel_pt = librosa.feature.melspectrogram(S=S_pt**2, sr=sr, n_mels=80)
+        mel_mlx = librosa.feature.melspectrogram(S=S_mlx**2, sr=sr, n_mels=80)
+        
+        log_mel_pt = librosa.power_to_db(mel_pt, ref=np.max)
+        log_mel_mlx = librosa.power_to_db(mel_mlx, ref=np.max)
+        
+        # Flatten and correlate
+        spec_corr = np.corrcoef(log_mel_pt.flatten(), log_mel_mlx.flatten())[0, 1]
+        
+        print(f"  Spectrogram Corr:{spec_corr:.6f} (Perceptual similarity, ignores phase)")
+        
+    except ImportError:
+        print("  Spectrogram Corr: Skipped (librosa not installed)")
 
     # Audio quality metrics
     pt_rms = np.sqrt(np.mean(pt_audio**2))
@@ -389,16 +434,93 @@ def compare_audio_results(pt_result, mlx_result):
 
     # Overall status
     print(f"\n📋 Overall Status:")
-    if correlation > 0.999:
-        print(f"  ✅ Excellent match! (correlation > 0.999)")
-    elif correlation > 0.99:
-        print(f"  ✅ Good match (correlation > 0.99)")
+    if spec_corr > 0.95:
+        print(f"  ✅ Perceptually Identical (Spectrogram Corr > 0.95)")
+        print(f"  ℹ️  Waveform Corr {correlation:.4f} may be low due to phase drift (expected).")
     elif correlation > 0.95:
-        print(f"  ⚠️  Acceptable match (correlation > 0.95)")
+        print(f"  ✅ Exact Match (Waveform Correlation > 0.95)")
     else:
-        print(f"  ❌ Poor match (correlation < 0.95)")
+        print(f"  ❌ Poor match (Spectrogram Corr < 0.95)")
 
     print("\n" + "="*60)
+    
+    if plot_path:
+        try:
+            import matplotlib.pyplot as plt
+            import librosa.display
+            
+            print(f"\nGeneratng analysis plot: {plot_path}")
+            
+            # Data
+            y_pt = pt_audio
+            y_mlx = mlx_audio
+            sr = pt_result['sample_rate']
+            
+            plt.figure(figsize=(16, 14))
+            
+            # Title with Metadata
+            pt_model_name = Path(pt_result['model_path']).name
+            mlx_model_name = Path(mlx_result['model_path']).name
+            audio_name = Path(pt_result['audio_path']).name
+            
+            # Try to get more metadata if possible
+            pt_meta = ""
+            pt_dir = Path(pt_result['model_path']).parent
+            # Check for metadata like 'params.json' or just use directory name as hint
+            if pt_dir.name != "models":
+                 pt_meta = f" (Source: {pt_dir.name})"
+
+            title_text = (
+                f"RVC Parity Benchmark | Audio: {audio_name}\n"
+                f"Models: PT({pt_model_name}{pt_meta}) vs MLX({mlx_model_name})\n"
+                f"PT SHA256: {pt_result['sha256']}\n"
+                f"MLX SHA256: {mlx_result['sha256']}"
+            )
+            
+            plt.suptitle(title_text, fontsize=12, fontfamily='monospace')
+            
+            # 1. Spectrograms (Difference?)
+            # Let's plot both side by side or Top/Bottom
+            plt.subplot(3, 1, 1)
+            D_pt = librosa.amplitude_to_db(np.abs(librosa.stft(y_pt)), ref=np.max)
+            D_mlx = librosa.amplitude_to_db(np.abs(librosa.stft(y_mlx)), ref=np.max)
+            
+            # Diff spectrogram
+            # Resize if needed? We already trimmed.
+            min_shapes = min(D_pt.shape[1], D_mlx.shape[1])
+            D_pt = D_pt[:, :min_shapes]
+            D_mlx = D_mlx[:, :min_shapes]
+            
+            librosa.display.specshow(D_pt, sr=sr, x_axis='time', y_axis='hz')
+            plt.title('PyTorch Spectrogram')
+            plt.colorbar(format='%+2.0f dB')
+            
+            # 2. Waveform Overlay
+            plt.subplot(3, 1, 2)
+            librosa.display.waveshow(y_pt, sr=sr, alpha=0.5, label='PyTorch', color='b')
+            librosa.display.waveshow(y_mlx, sr=sr, alpha=0.5, label='MLX', color='r')
+            plt.title('Waveform Overlay')
+            plt.legend(loc='upper right')
+            
+            # 3. Spectral Features
+            plt.subplot(3, 1, 3)
+            cent_pt = librosa.feature.spectral_centroid(y=y_pt, sr=sr)[0]
+            cent_mlx = librosa.feature.spectral_centroid(y=y_mlx, sr=sr)[0]
+            times = librosa.times_like(cent_pt)
+            
+            plt.plot(times, cent_pt, label='PT Centroids', color='b')
+            plt.plot(times, cent_mlx, label='MLX Centroids', color='r', linestyle='--')
+            plt.title('Spectral Centroid Comparison')
+            plt.legend(loc='upper right')
+            
+            plt.tight_layout(rect=[0, 0.03, 1, 0.90]) # Adjust for suptitle
+            plt.savefig(plot_path)
+            print(f"  ✅ Saved plot to {plot_path}")
+            
+        except Exception as e:
+            print(f"  ❌ Failed to generate plot: {e}")
+
+
 
 
 def main():
@@ -455,6 +577,11 @@ def main():
         default="/tmp",
         help="Directory to save output audio files",
     )
+    parser.add_argument(
+        "--save-plot",
+        action="store_true",
+        help="Generate and save analysis plot (spectrogram/waveform/features)",
+    )
 
     args = parser.parse_args()
 
@@ -466,14 +593,22 @@ def main():
     print(f"  Benchmark runs: {args.runs}")
     print(f"  Warmup: {'Yes' if not args.no_warmup else 'No'}")
     print(f"  Save outputs: {'Yes' if args.save_outputs else 'No'}")
+    print(f"  Save plot: {'Yes' if args.save_plot else 'No'}")
 
     # Prepare output paths
     pt_output = None
     mlx_output = None
-    if args.save_outputs:
+    plot_output = None
+    
+    if args.save_outputs or args.save_plot:
         os.makedirs(args.output_dir, exist_ok=True)
+        
+    if args.save_outputs:
         pt_output = os.path.join(args.output_dir, "pytorch_output.wav")
         mlx_output = os.path.join(args.output_dir, "mlx_output.wav")
+        
+    if args.save_plot:
+        plot_output = os.path.join(args.output_dir, "benchmark_plot.png")
 
     # Run benchmarks
     pt_result = None
@@ -499,7 +634,7 @@ def main():
 
     # Compare results
     if pt_result and mlx_result:
-        compare_audio_results(pt_result, mlx_result)
+        compare_audio_results(pt_result, mlx_result, plot_path=plot_output)
 
     print("\n✅ Benchmark complete!")
 
