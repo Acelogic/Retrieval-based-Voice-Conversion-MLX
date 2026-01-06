@@ -14,6 +14,74 @@ from rvc_mlx.lib.mlx.hubert import HubertModel, HubertConfig
 from rvc_mlx.lib.mlx.rmvpe import RMVPE0Predictor
 from rvc_mlx.infer.pipeline_mlx import PipelineMLX
 
+def remap_keys(weights):
+    new_weights = {}
+    for k, v in weights.items():
+        new_key = k
+        # Decoder remapping
+        if new_key.startswith("dec.resblocks."):
+            # dec.resblocks.0.convs1.0.weight -> dec.resblock_0.c1_0.weight
+            parts = new_key.split(".")
+            idx = parts[2]
+            c_type = "c1" if "convs1" in new_key else "c2"
+            c_idx = parts[4]
+            rest = parts[5:] # weight, bias
+            new_key = f"dec.resblock_{idx}.{c_type}_{c_idx}.{'.'.join(rest)}"
+        elif new_key.startswith("dec.ups."):
+            # dec.ups.0.weight -> dec.up_0.weight
+            parts = new_key.split(".")
+            idx = parts[2]
+            rest = parts[3:]
+            new_key = f"dec.up_{idx}.{'.'.join(rest)}"
+        elif new_key.startswith("dec.noise_convs."):
+            parts = new_key.split(".")
+            idx = parts[2]
+            rest = parts[3:]
+            new_key = f"dec.noise_conv_{idx}.{'.'.join(rest)}"
+            
+        # Encoder remapping
+        elif new_key.startswith("enc_p.encoder.attn_layers."):
+            # enc_p.encoder.attn_layers.0.conv_q.weight -> enc_p.encoder.attn_0.conv_q.weight
+            parts = new_key.split(".")
+            idx = parts[3]
+            rest = parts[4:]
+            new_key = f"enc_p.encoder.attn_{idx}.{'.'.join(rest)}"
+        elif new_key.startswith("enc_p.encoder.norm_layers_1."):
+            parts = new_key.split(".")
+            idx = parts[3]
+            rest = parts[4:]
+            new_key = f"enc_p.encoder.norm1_{idx}.{'.'.join(rest)}"
+        elif new_key.startswith("enc_p.encoder.norm_layers_2."):
+            parts = new_key.split(".")
+            idx = parts[3]
+            rest = parts[4:]
+            new_key = f"enc_p.encoder.norm2_{idx}.{'.'.join(rest)}"
+        elif new_key.startswith("enc_p.encoder.ffn_layers."):
+            parts = new_key.split(".")
+            idx = parts[3]
+            rest = parts[4:]
+            new_key = f"enc_p.encoder.ffn_{idx}.{'.'.join(rest)}"
+            
+        # Flow remapping
+        elif new_key.startswith("flow.flows."):
+            # flow.flows.0.enc.in_layers.0.weight -> flow.flow_0.enc.in_layer_0.weight
+            parts = new_key.split(".")
+            f_idx = parts[2]
+            if "in_layers" in new_key:
+                l_idx = parts[5]
+                rest = parts[6:]
+                new_key = f"flow.flow_{f_idx}.enc.in_layer_{l_idx}.{'.'.join(rest)}"
+            elif "res_skip_layers" in new_key:
+                l_idx = parts[5]
+                rest = parts[6:]
+                new_key = f"flow.flow_{f_idx}.enc.res_skip_layer_{l_idx}.{'.'.join(rest)}"
+            else:
+                rest = parts[3:]
+                new_key = f"flow.flow_{f_idx}.{'.'.join(rest)}"
+
+        new_weights[new_key] = v
+    return new_weights
+
 def load_audio(file_path, sr=16000):
     try:
         audio, samplerate = sf.read(file_path)
@@ -92,7 +160,56 @@ class RVC_MLX:
         spk_embed_dim = 109 # Default
         gin_channels = 256
         sr = 40000 # Default
+        upsample_rates = [10, 10, 2, 2] # Correct for 40k
+
+        # Load config if exists
+        config_path = os.path.splitext(model_path)[0] + ".json"
+        if os.path.exists(config_path):
+             import json
+             with open(config_path, 'r') as f:
+                 conf = json.load(f)
+                 if isinstance(conf, list):
+                      # RVC JSON export format (list)
+                      # [spec_channels, segment_size, inter_channels, hidden_channels, filter_channels, 
+                      #  n_heads, n_layers, kernel_size, p_dropout, resblock, resblock_kernel_sizes, 
+                      #  resblock_dilation_sizes, upsample_rates, upsample_initial_channel, 
+                      #  upsample_kernel_sizes, spk_embed_dim, gin_channels, sr]
+                      if len(conf) >= 18:
+                           spec_channels = conf[0]
+                           segment_size = conf[1]
+                           inter_channels = conf[2]
+                           hidden_channels = conf[3]
+                           filter_channels = conf[4]
+                           n_heads = conf[5]
+                           n_layers = conf[6]
+                           kernel_size = conf[7]
+                           p_dropout = conf[8]
+                           resblock = conf[9]
+                           resblock_kernel_sizes = conf[10]
+                           resblock_dilation_sizes = conf[11]
+                           upsample_rates = conf[12]
+                           upsample_initial_channel = conf[13]
+                           upsample_kernel_sizes = conf[14]
+                           spk_embed_dim = conf[15]
+                           gin_channels = conf[16]
+                           sr = conf[17]
+                 elif isinstance(conf, dict):
+                      if "data" in conf:
+                           sr = conf["data"].get("sampling_rate", sr)
+                      if "model" in conf:
+                           m_conf = conf["model"]
+                           upsample_rates = m_conf.get("upsample_rates", upsample_rates)
+                           upsample_initial_channel = m_conf.get("upsample_initial_channel", upsample_initial_channel)
+                           upsample_kernel_sizes = m_conf.get("upsample_kernel_sizes", upsample_kernel_sizes)
+                           gin_channels = m_conf.get("gin_channels", gin_channels)
+                           hidden_channels = m_conf.get("hidden_channels", hidden_channels)
+                           inter_channels = m_conf.get("inter_channels", inter_channels)
+                           filter_channels = m_conf.get("filter_channels", filter_channels)
+                           n_heads = m_conf.get("n_heads", n_heads)
+                           n_layers = m_conf.get("n_layers", n_layers)
         
+        print(f"DEBUG: Model configuration - Sample Rate: {sr}, Upsample Rates: {upsample_rates}, Total Upsample: {np.prod(upsample_rates)}")
+
         # Check speakers from weights
         if "emb_g.weight" in weights:
              spk_embed_dim = weights["emb_g.weight"].shape[0]
@@ -121,7 +238,8 @@ class RVC_MLX:
         )
         
         # Load weights
-        self.net_g.update(weights)
+        weights = remap_keys(weights)
+        self.net_g.load_weights(list(weights.items()), strict=False)
         mx.eval(self.net_g.parameters())
         
         self.tgt_sr = sr

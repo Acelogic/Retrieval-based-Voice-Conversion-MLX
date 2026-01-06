@@ -140,16 +140,13 @@ class PipelineMLX:
         # audio0: numpy (T,)
         
         # 1. Feature Extraction (Hubert)
-        # expects (N, T)
         audio_mx = mx.array(audio0)[None, :]
-        
-        # Extract
-        # HubertModel.__call__ returns projected features (N, L, C)
         feats = self.hubert_model(audio_mx) 
-        
-        # 2. Speaker Indexing (FAISS)
         # feats is MLX array. Convert to CPU/Numpy for Faiss
         feats_np = np.array(feats) # (1, L, C)
+        
+        # Store raw features BEFORE index retrieval for protection logic
+        feats0_np = feats_np.copy()
         
         if index is not None and index_rate > 0:
             # feats_np[0] shape (L, C)
@@ -197,30 +194,22 @@ class PipelineMLX:
             pitch = pitch[:p_len]
             pitchf = pitchf[:p_len]
             
-            # Protection
+            # Protection: blend indexed features with raw features for unvoiced segments
             if protect < 0.5:
-                # pitchff = pitchf.clone()
-                # pitchff[pitchf > 0] = 1
-                # pitchff[pitchf < 1] = protect
+                # Create protection mask based on pitch
+                # pitchff = 1 for voiced (pitchf > 0), protect for unvoiced
+                pitchff = np.where(pitchf > 0, 1.0, protect)
+                pitchff = pitchff[:, None]  # (L, 1) for broadcasting with (L, C)
                 
-                # feats = feats * pitchff + feats0 * (1-pitchff)
-                # We need feats0 (original feats before potential manipulation? No, original usually means source vs target?)
-                # Code says: feats0 = feats.clone() if pitch_guidance else None
-                # BUT feats was already modified by Index? Yes.
-                # So feats0 is just feats copy.
+                # Get upsampled feats0 (raw features)
+                feats0_np_up = feats0_np.copy()
+                B0, L0, C0 = feats0_np_up.shape
+                feats0_np_up = np.repeat(feats0_np_up, 2, axis=1)[:, :p_len, :]  # Match upsampled length
                 
-                # Wait, pitch protection usually blends the FEATURE embedding based on pitch?
-                # RVC logic:
-                # pitchff scales features?
-                # "feats = feats * pitchff.unsqueeze(-1) + feats0 * (1 - pitchff.unsqueeze(-1))"
-                # If feats == feats0, this does nothing???
-                # Ah, feats0 is created BEFORE index retrieval in original implementation?
-                # Let's check original.
-                # Line 336: feats0 = feats.clone().
-                # Line 340: feats = self.retrieve...
-                # So feats0 is RAW hubert features. feats is INDEXED features.
-                # If protect is low, we blend BACK to RAW features for unvoiced parts?
-                pass
+                # Blend: for unvoiced parts, use more of the raw features
+                feats_np_current = np.array(feats)
+                feats_np_current = feats_np_current * pitchff[None, :, :] + feats0_np_up * (1 - pitchff[None, :, :])
+                feats = mx.array(feats_np_current)
             
             pitch_mx = mx.array(pitch)[None, :] # (1, L)
             pitchf_mx = mx.array(pitchf)[None, :] # (1, L)
@@ -228,10 +217,6 @@ class PipelineMLX:
         sid_mx = mx.array(sid)[None] # (1,)
         
         # 5. Inference
-        # Synthesizer.infer(feats, lengths, pitch, pitchf, sid)
-        # lengths needed for training usually, but here?
-        # infer(self, phone, phone_lengths, pitch, nsff0, sid, rate=None)
-        
         out_audio, _, _ = net_g.infer(
             feats,
             mx.array([p_len]),
@@ -323,13 +308,29 @@ class PipelineMLX:
             protect
         )
         
+        # Calculate upsample factor from net_g if possible, or use global
+        upsample_factor = getattr(net_g, "upp", self.window // 160 * (self.tgt_sr // 100)) # fallback
+        if hasattr(net_g, "dec") and hasattr(net_g.dec, "upp"):
+             upsample_factor = net_g.dec.upp
+
         # Trim padding
-        audio_out = audio_out[int(t_pad_tgt) : -int(t_pad_tgt)]
+        # The padding was self.t_pad samples at 16k.
+        # At target SR, this is self.t_pad * (self.tgt_sr / 16000)
+        # Or more simply: self.t_pad * (upsample_factor / self.window)
+        # Actually t_pad is already samples. t_pad_tgt = t_pad * (tgt_sr / 16000)
+        
+        actual_t_pad_tgt = int(t_pad * (self.tgt_sr / 16000))
+        audio_out = audio_out[actual_t_pad_tgt : -actual_t_pad_tgt]
         
         # Volume Envelope
         if volume_envelope != 1:
             audio_out = AudioProcessor.change_rms(
                 audio, self.sample_rate, audio_out, self.tgt_sr, volume_envelope
             )
+        
+        # Audio max normalization (match PyTorch behavior)
+        audio_max = np.abs(audio_out).max() / 0.99
+        if audio_max > 1:
+            audio_out = audio_out / audio_max
             
         return audio_out
