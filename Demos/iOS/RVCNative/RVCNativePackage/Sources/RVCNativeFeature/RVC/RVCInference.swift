@@ -23,6 +23,15 @@ import MLXNN
             }
         }
         
+        public func unloadModels() {
+            log("RVCInference: Unloading models to release file handles.")
+            self.hubertModel = nil
+            self.synthesizer = nil
+            self.rmvpe = nil
+            self.status = "Idle"
+            MLX.Memory.clearCache()
+        }
+        
         public init() {
             log("RVCInference: Initializing...")
             #if targetEnvironment(simulator)
