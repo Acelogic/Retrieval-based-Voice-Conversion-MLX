@@ -21,85 +21,39 @@ class Conv1d: Module {
     }
 }
 
-class ConvTranspose1d: Module {
-    let conv: MLXNN.Conv1d
-    let stride: Int
-    let padding: Int
-    let kernelSize: Int
-    
-    init(_ inChannels: Int, _ outChannels: Int, kernelSize: Int, stride: Int = 1, padding: Int = 0, bias: Bool = true) {
-        // Transposed conv via upsampling + conv
-        self.conv = MLXNN.Conv1d(inputChannels: inChannels, outputChannels: outChannels, kernelSize: kernelSize, stride: 1, padding: 0, bias: bias)
-        self.stride = stride
-        self.padding = padding
-        self.kernelSize = kernelSize
-        super.init()
-    }
-    
-    func callAsFunction(_ x: MLXArray) -> MLXArray {
-        // x: [N, L, C]
-        let shape = x.shape
-        let N = shape[0]
-        let L = shape[1]
-        let C = shape[2]
-        
-        var xUp: MLXArray
-        if stride > 1 {
-            // Upsample by inserting zeros: [N, L, C] -> [N, L * stride, C]
-            // expand to [N, L, 1, C]
-            let xExp = x.reshaped([N, L, 1, C])
-            // Create zeros [N, L, stride-1, C]
-            let xZeros = MLX.zeros([N, L, stride - 1, C], dtype: x.dtype)
-            // Concat -> [N, L, stride, C]
-            let xCat = MLX.concatenated([xExp, xZeros], axis: 2)
-            // Reshape -> [N, L * stride, C]
-            xUp = xCat.reshaped([N, L * stride, C])
-        } else {
-            xUp = x
-        }
-        
-        // Padding
-        let pad = kernelSize - 1 - padding
-        if pad > 0 {
-             // Use padded functionality
-             xUp = padded(xUp, widths: [[0,0], [pad, pad], [0,0]])
-        }
-        
-        return conv(xUp)
-    }
-}
-
 class ResBlock: Module {
-    let convs1: [Conv1d]
-    let convs2: [Conv1d]
-    
+    // CRITICAL: Named properties to match Python weight keys (c1_0, c1_1, c1_2, c2_0, c2_1, c2_2)
+    let c1_0: Conv1d
+    let c1_1: Conv1d
+    let c1_2: Conv1d
+    let c2_0: Conv1d
+    let c2_1: Conv1d
+    let c2_2: Conv1d
+
     init(channels: Int, kernelSize: Int = 3, dilation: [Int] = [1, 3, 5]) {
-        var c1: [Conv1d] = []
-        var c2: [Conv1d] = []
-        
-        for d in dilation {
-            c1.append(Conv1d(
-                channels, channels,
-                kernelSize: kernelSize,
-                stride: 1,
-                padding: (kernelSize - 1) * d / 2,
-                dilation: d,
-                bias: true
-            ))
-            
-            c2.append(Conv1d(
-                channels, channels,
-                kernelSize: kernelSize,
-                stride: 1,
-                padding: (kernelSize - 1) / 2
-            ))
-        }
-        self.convs1 = c1
-        self.convs2 = c2
+        // Create convs with correct dilation for each layer
+        // convs1 use dilation, convs2 use dilation=1
+        self.c1_0 = Conv1d(channels, channels, kernelSize: kernelSize, stride: 1,
+                           padding: (kernelSize - 1) * dilation[0] / 2, dilation: dilation[0], bias: true)
+        self.c1_1 = Conv1d(channels, channels, kernelSize: kernelSize, stride: 1,
+                           padding: (kernelSize - 1) * dilation[1] / 2, dilation: dilation[1], bias: true)
+        self.c1_2 = Conv1d(channels, channels, kernelSize: kernelSize, stride: 1,
+                           padding: (kernelSize - 1) * dilation[2] / 2, dilation: dilation[2], bias: true)
+
+        self.c2_0 = Conv1d(channels, channels, kernelSize: kernelSize, stride: 1,
+                           padding: (kernelSize - 1) / 2, bias: true)
+        self.c2_1 = Conv1d(channels, channels, kernelSize: kernelSize, stride: 1,
+                           padding: (kernelSize - 1) / 2, bias: true)
+        self.c2_2 = Conv1d(channels, channels, kernelSize: kernelSize, stride: 1,
+                           padding: (kernelSize - 1) / 2, bias: true)
+
         super.init()
     }
-    
+
     func callAsFunction(_ x: MLXArray) -> MLXArray {
+        let convs1 = [c1_0, c1_1, c1_2]
+        let convs2 = [c2_0, c2_1, c2_2]
+
         var out = x
         for (c1, c2) in zip(convs1, convs2) {
             var xt = out
@@ -239,72 +193,87 @@ class Generator: Module {
     // Properties named to match Python weights (dec.conv_pre, dec.ups, dec.resblocks, dec.noise_convs, dec.m_source)
     let conv_pre: Conv1d
     let conv_post: Conv1d
-    let ups: [ConvTranspose1d]
-    let resblocks: [ResBlock]
-    let noise_convs: [Conv1d]
     let m_source: SourceModuleHnNSF
     let cond: Conv1d?  // Speaker conditioning
+
+    // CRITICAL: These must be registered as individual attributes to match Python weight keys
+    // Python: setattr(self, f"up_{i}", l) creates dec.up_0, dec.up_1, etc.
+    let up_0: MLXNN.ConvTransposed1d
+    let up_1: MLXNN.ConvTransposed1d
+    let up_2: MLXNN.ConvTransposed1d
+    let up_3: MLXNN.ConvTransposed1d
+
+    // Resblocks: 3 per upsample layer * 4 layers = 12 total
+    let resblock_0: ResBlock
+    let resblock_1: ResBlock
+    let resblock_2: ResBlock
+    let resblock_3: ResBlock
+    let resblock_4: ResBlock
+    let resblock_5: ResBlock
+    let resblock_6: ResBlock
+    let resblock_7: ResBlock
+    let resblock_8: ResBlock
+    let resblock_9: ResBlock
+    let resblock_10: ResBlock
+    let resblock_11: ResBlock
+
+    // Noise convs: 1 per upsample layer = 4 total
+    let noise_conv_0: Conv1d
+    let noise_conv_1: Conv1d
+    let noise_conv_2: Conv1d
+    let noise_conv_3: Conv1d
     
     init(inputChannels: Int = 768, ginChannels: Int = 0) {
         // Standard RVC V2 40k configuration from configs/40000.json
-        let upsampleRates = [10, 10, 2, 2]
-        let upsampleKernels = [16, 16, 4, 4]
-        let resblockKernels = [3, 7, 11]
-        let resblockDilations = [[1, 3, 5], [1, 3, 5], [1, 3, 5]]
         let upsampleInitialChannel = 512
-        
+
         self.conv_pre = Conv1d(inputChannels, upsampleInitialChannel, kernelSize: 7, stride: 1, padding: 3)
-        
+
         // Speaker conditioning
         self.cond = ginChannels > 0 ? Conv1d(ginChannels, upsampleInitialChannel, kernelSize: 1, stride: 1, padding: 0) : nil
-        
+
         // Initialize NSF Source Module
         self.m_source = SourceModuleHnNSF(sample_rate: 40000, harmonic_num: 0)
-        
-        var _ups: [ConvTranspose1d] = []
-        var _resblocks: [ResBlock] = []
-        var _noise_convs: [Conv1d] = []
-        
-        var ch = upsampleInitialChannel
-        
-        // Calculate stride products for noise_convs (matching Python "stride_f0s")
-        // stride_f0s[i] = prod(upsample_rates[i+1:])
-        var stride_f0s: [Int] = []
-        for i in 0..<upsampleRates.count {
-            if i + 1 < upsampleRates.count {
-                let s = upsampleRates[(i+1)...].reduce(1, *)
-                stride_f0s.append(s)
-            } else {
-                stride_f0s.append(1)
-            }
-        }
-        
-        for (i, (u, k)) in zip(upsampleRates, upsampleKernels).enumerated() {
-            let outCh = ch / 2
-            // Padding logic matches Python implementation
-            let p = (u % 2 == 0) ? (k - u) / 2 : (u / 2 + u % 2)
-            
-            _ups.append(ConvTranspose1d(ch, outCh, kernelSize: k, stride: u, padding: p))
-            
-            // 3 ResBlocks per upsample layer
-            for (rk, rd) in zip(resblockKernels, resblockDilations) {
-                _resblocks.append(ResBlock(channels: outCh, kernelSize: rk, dilation: rd))
-            }
-            
-            // Noise Conv (NSF)
-            let stride = stride_f0s[i]
-            let kernel = (stride == 1) ? 1 : (stride * 2 - stride % 2)
-            let padding = (stride == 1) ? 0 : (kernel - stride) / 2
-            _noise_convs.append(Conv1d(1, outCh, kernelSize: kernel, stride: stride, padding: padding))
-            
-            ch = outCh
-        }
-        
-        self.ups = _ups
-        self.resblocks = _resblocks
-        self.noise_convs = _noise_convs
-        self.conv_post = Conv1d(ch, 1, kernelSize: 7, stride: 1, padding: 3)
-        
+
+        // Upsample layers: channels halve at each step
+        // Layer 0: 512 -> 256, rate=10, kernel=16
+        // Layer 1: 256 -> 128, rate=10, kernel=16
+        // Layer 2: 128 -> 64, rate=2, kernel=4
+        // Layer 3: 64 -> 32, rate=2, kernel=4
+        // Note: MLXNN.ConvTransposed1d(inputChannels, outputChannels, kernelSize, stride, padding)
+        self.up_0 = MLXNN.ConvTransposed1d(inputChannels: 512, outputChannels: 256, kernelSize: 16, stride: 10, padding: 3)
+        self.up_1 = MLXNN.ConvTransposed1d(inputChannels: 256, outputChannels: 128, kernelSize: 16, stride: 10, padding: 3)
+        self.up_2 = MLXNN.ConvTransposed1d(inputChannels: 128, outputChannels: 64, kernelSize: 4, stride: 2, padding: 1)
+        self.up_3 = MLXNN.ConvTransposed1d(inputChannels: 64, outputChannels: 32, kernelSize: 4, stride: 2, padding: 1)
+
+        // ResBlocks: 3 per upsample layer (one for each kernel size 3, 7, 11)
+        // Layer 0 resblocks (256 channels)
+        self.resblock_0 = ResBlock(channels: 256, kernelSize: 3, dilation: [1, 3, 5])
+        self.resblock_1 = ResBlock(channels: 256, kernelSize: 7, dilation: [1, 3, 5])
+        self.resblock_2 = ResBlock(channels: 256, kernelSize: 11, dilation: [1, 3, 5])
+        // Layer 1 resblocks (128 channels)
+        self.resblock_3 = ResBlock(channels: 128, kernelSize: 3, dilation: [1, 3, 5])
+        self.resblock_4 = ResBlock(channels: 128, kernelSize: 7, dilation: [1, 3, 5])
+        self.resblock_5 = ResBlock(channels: 128, kernelSize: 11, dilation: [1, 3, 5])
+        // Layer 2 resblocks (64 channels)
+        self.resblock_6 = ResBlock(channels: 64, kernelSize: 3, dilation: [1, 3, 5])
+        self.resblock_7 = ResBlock(channels: 64, kernelSize: 7, dilation: [1, 3, 5])
+        self.resblock_8 = ResBlock(channels: 64, kernelSize: 11, dilation: [1, 3, 5])
+        // Layer 3 resblocks (32 channels)
+        self.resblock_9 = ResBlock(channels: 32, kernelSize: 3, dilation: [1, 3, 5])
+        self.resblock_10 = ResBlock(channels: 32, kernelSize: 7, dilation: [1, 3, 5])
+        self.resblock_11 = ResBlock(channels: 32, kernelSize: 11, dilation: [1, 3, 5])
+
+        // Noise convs: downsample har_source to match each upsample stage
+        // stride_f0s = [40, 4, 2, 1]
+        // kernel = stride * 2 - stride % 2 (or 1 if stride == 1)
+        self.noise_conv_0 = Conv1d(1, 256, kernelSize: 80, stride: 40, padding: 20)  // stride=40
+        self.noise_conv_1 = Conv1d(1, 128, kernelSize: 8, stride: 4, padding: 2)     // stride=4
+        self.noise_conv_2 = Conv1d(1, 64, kernelSize: 4, stride: 2, padding: 1)      // stride=2
+        self.noise_conv_3 = Conv1d(1, 32, kernelSize: 1, stride: 1, padding: 0)      // stride=1
+
+        self.conv_post = Conv1d(32, 1, kernelSize: 7, stride: 1, padding: 3)
+
         super.init()
     }
     
@@ -317,32 +286,44 @@ class Generator: Module {
 
         out = conv_pre(out)
         print("DEBUG: Generator.conv_pre out: \(out.shape), [\(out.min().item(Float.self))...\(out.max().item(Float.self))]")
-        
+
         // Add speaker conditioning if available
         if let g = g, let condLayer = cond {
             out = out + condLayer(g)
             print("DEBUG: Generator.cond added: [\(out.min().item(Float.self))...\(out.max().item(Float.self))]")
         }
 
-        
         // NSF Source Signal: [B, L*U, 1] (High Resolution)
         // upp = prod(upsampleRates) = 400
         let upp = 400
         let har_source = m_source(f0, upsampling_factor: upp)
         print("DEBUG: Generator.har_source: [\(har_source.min().item(Float.self))...\(har_source.max().item(Float.self))]")
         // har_source is now [B, AudioLen, 1]
-        
+
+        // Use arrays for iteration but reference the named properties
+        let ups: [MLXNN.ConvTransposed1d] = [up_0, up_1, up_2, up_3]
+        let noise_convs: [Conv1d] = [noise_conv_0, noise_conv_1, noise_conv_2, noise_conv_3]
+        let resblocks: [ResBlock] = [
+            resblock_0, resblock_1, resblock_2,
+            resblock_3, resblock_4, resblock_5,
+            resblock_6, resblock_7, resblock_8,
+            resblock_9, resblock_10, resblock_11
+        ]
+
         var resIdx = 0
         // Iterate through upsampling layers
         for (i, up) in ups.enumerated() {
             out = leakyRelu(out, negativeSlope: LRELU_SLOPE)
             out = up(out)
             
+            // MEMORY FIX: Force evaluation after each upsample to prevent graph accumulation
+            MLX.eval(out)
+
             // Add NSF Noise
             // noise_conv reduces har_source resolution to match current 'out'
             let noise_conv = noise_convs[i]
             let n = noise_conv(har_source)
-            
+
             // Crop if necessary
             if out.shape[1] != n.shape[1] {
                 let minLen = min(out.shape[1], n.shape[1])
@@ -351,21 +332,25 @@ class Generator: Module {
             } else {
                 out = out + n
             }
-            
+
             // Multi-ResBlocks
             var xs: MLXArray? = nil
             for _ in 0..<3 { // 3 kernels
                 let res = resblocks[resIdx]
                 let r = res(out)
-                if xs == nil {  xs = r } 
+                if xs == nil { xs = r }
                 else { xs = xs! + r }
                 resIdx += 1
             }
             // Average
             out = xs! / 3.0
+            
+            // MEMORY FIX: Evaluate and clear cache after each stage
+            MLX.eval(out)
+            MLX.Memory.clearCache()
             print("DEBUG: Generator.ups[\(i)] (after resblocks) out: [\(out.min().item(Float.self))...\(out.max().item(Float.self))]")
         }
-        
+
         out = leakyRelu(out)
         out = conv_post(out)
         print("DEBUG: Generator.conv_post out: \(out.shape), [\(out.min().item(Float.self))...\(out.max().item(Float.self))]")

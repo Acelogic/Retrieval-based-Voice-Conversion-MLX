@@ -1,0 +1,14 @@
+{
+  "audio_path": "test-audio/coder_audio_stock.wav",
+  "sample_rate": 16000,
+  "duration_seconds": 13.50625,
+  "hubert_output_shape": [
+    1,
+    675,
+    256
+  ],
+  "f0_shape": [
+    1351
+  ],
+  "model_path": null
+}
