@@ -137,6 +137,9 @@ struct ContentView: View {
     // Waveform samples for visualization
     @State private var originalWaveform: [Float] = []
     @State private var convertedWaveform: [Float] = []
+    
+    // Model List State
+    @State private var importedModels: [String] = []
 
     // Quick Demo File
     let stockAudioURL = RVCInference.bundle.url(forResource: "coder_audio_stock", withExtension: "wav") ?? RVCInference.bundle.url(forResource: "demo", withExtension: "wav")
@@ -148,247 +151,38 @@ struct ContentView: View {
     // Conversion Progress
     @State private var conversionProgress: Double = 0.0
     @State private var isConverting: Bool = false
+    @State private var isManagingModels: Bool = false
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: 20) {
-                    Text("Powered by MLX Swift")
-                        .font(.subheadline)
-                        .foregroundStyle(.gray)
-                    
-                    Divider()
-                    
-                    // Model Selection
-                    HStack {
-                        Text("Model:")
-                        Spacer()
-                        Menu {
-                            Section("Bundle Models") {
-                                Button("Coder", action: { loadModel(name: "Coder") })
-                                Button("Slim Shady", action: { loadModel(name: "Slim Shady") })
-                            }
-                            
-                            Section("Imported Models") {
-                                if getImportedModels().isEmpty {
-                                    Text("No imported models")
-                                } else {
-                                    ForEach(getImportedModels(), id: \.self) { modelName in
-                                        Button(modelName) {
-                                            loadModel(name: modelName, isImported: true)
-                                        }
-                                    }
-                                }
-                            }
+            ZStack {
+                backgroundGradient
+                
+                ScrollView {
+                    GlassEffectContainer {
+                        VStack(spacing: 20) {
+                            headerView
                             
                             Divider()
+                                .overlay(.white.opacity(0.2))
                             
-                            Button(action: { isImporting = true }) {
-                                Label("Import Model (.safetensors)", systemImage: "square.and.arrow.down")
-                            }
-                        } label: {
-                            Text(selectedModel)
-                                .padding(.horizontal)
-                                .padding(.vertical, 8)
-                                .background(Color.blue.opacity(0.1))
-                                .cornerRadius(8)
-                        }
-                    }
-                    .padding()
-                    .background(Color(.systemGray6))
-                    .cornerRadius(12)
-                    
-                    // Volume Envelope Slider
-                    VStack(alignment: .leading, spacing: 5) {
-                        HStack {
-                            Text("Volume Envelope (Reduce Noise)")
-                                .font(.caption)
-                                .foregroundStyle(.gray)
+                            modelSelectionView
+                            volumeControlView
+                            audioInputControlView
+                            conversionProgressView
+                            inferenceButtonView
+                            resultView
+                            
                             Spacer()
-                            Text(String(format: "%.2f", volumeEnvelope))
-                                .font(.caption)
-                                .monospacedDigit()
-                        }
-                        Slider(value: $volumeEnvelope, in: 0.0...1.0, step: 0.05)
-                    }
-                    .padding()
-                    .background(Color(.systemGray6))
-                    .cornerRadius(12)
-                    
-                    // Actions
-                    Button(action: {
-                        isImporting = true
-                    }) {
-                        HStack {
-                            Image(systemName: "waveform.circle")
-                            Text(inputURL == nil ? "Select Audio File" : "Selected: \(inputURL?.lastPathComponent ?? "File")")
-                        }
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                        .padding()
-                        .background(Color.blue)
-                        .foregroundColor(.white)
-                        .cornerRadius(12)
-                    }
-                    
-                    // Audio Loaded Indicator
-                    if let input = inputURL {
-                       HStack {
-                           Image(systemName: "checkmark.circle.fill")
-                               .foregroundColor(.green)
-                           Text("Ready to convert: \(input.lastPathComponent)")
-                               .font(.caption)
-                               .foregroundColor(.secondary)
-                       }
-                    } else if let stock = stockAudioURL {
-                        Text("Using stock audio: \(stock.lastPathComponent)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    
-                    // Play Original
-                     if let url = inputURL {
-                         Button(action: {
-                             if inputPlayer.isPlaying {
-                                 inputPlayer.stop()
-                             } else {
-                                 inputPlayer.play(url: url)
-                             }
-                         }) {
-                             HStack {
-                                 Image(systemName: inputPlayer.isPlaying ? "stop.fill" : "play.fill")
-                                 Text(inputPlayer.isPlaying ? "Stop Original" : "Play Original")
-                             }
-                             .font(.subheadline)
-                             .foregroundColor(.blue)
-                             .padding(.vertical, 4)
-                         }
-                     }
-                    
-                    // Audio Recording
-                    if audioRecorder.isRecording {
-                        Button(action: { audioRecorder.stopRecording() }) {
-                            HStack {
-                                Image(systemName: "stop.circle.fill")
-                                Text("Stop Recording")
-                            }
-                            .font(.headline)
-                            .frame(maxWidth: .infinity)
-                            .padding()
-                            .background(Color.red.opacity(0.2))
-                            .foregroundColor(.red)
-                            .cornerRadius(12)
-                        }
-                    } else {
-                        Button(action: { audioRecorder.startRecording() }) {
-                            HStack {
-                                Image(systemName: "mic.circle.fill")
-                                Text("Record Audio")
-                            }
-                            .font(.headline)
-                            .frame(maxWidth: .infinity)
-                            .padding()
-                            .background(Color.red.opacity(0.1))
-                            .foregroundColor(.red)
-                            .cornerRadius(12)
-                        }
-                    }
-                    
-                    // Conversion Progress Bar
-                    if isConverting {
-                        VStack(spacing: 8) {
-                            ProgressView(value: conversionProgress, total: 1.0)
-                                .progressViewStyle(LinearProgressViewStyle())
-                            Text("\(Int(conversionProgress * 100))% - \(statusMessage)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                            
+                            consoleOutputView
                         }
                         .padding()
-                        .background(Color(.systemGray6))
-                        .cornerRadius(8)
-                    }
-                    
-                    Button(action: {
-                        Task {
-                           await startInference()
-                        }
-                    }) {
-                        HStack {
-                            if isProcessing {
-                                ProgressView()
-                                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
-                            } else {
-                                Image(systemName: "bolt.fill")
-                            }
-                            Text(isProcessing ? "Inferencing..." : "Convert Voice")
-                        }
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                        .padding()
-                        .background(isProcessing || !isModelLoaded ? Color.gray : Color.green)
-                        .foregroundColor(.white)
-                        .cornerRadius(12)
-                    }
-                    .disabled(isProcessing || inputURL == nil || !isModelLoaded)
-                    
-                    // Play Converted
-                    if let url = outputURL, !isProcessing {
-                        Divider()
-                        Text("Result")
-                            .font(.headline)
-                        
-                        Button(action: {
-                            if outputPlayer.isPlaying {
-                                outputPlayer.stop()
-                            } else {
-                                outputPlayer.play(url: url)
-                            }
-                        }) {
-                            HStack {
-                                Image(systemName: outputPlayer.isPlaying ? "stop.circle.fill" : "play.circle.fill")
-                                Text(outputPlayer.isPlaying ? "Stop Converted" : "Play Converted")
-                            }
-                            .font(.title2)
-                            .frame(maxWidth: .infinity)
-                            .padding()
-                            .background(Color.green.opacity(0.2))
-                            .foregroundColor(.green)
-                            .cornerRadius(12)
-                        }
-                        
-                        // Waveform comparison
-                        if !originalWaveform.isEmpty && !convertedWaveform.isEmpty {
-                            WaveformComparisonView(
-                                originalSamples: originalWaveform,
-                                convertedSamples: convertedWaveform
-                            )
-                        }
-                    }
-                    
-                    Spacer()
-                    
-                    // Status Log
-                    VStack(alignment: .leading) {
-                         Text("Console Output")
-                             .font(.caption)
-                             .bold()
-                             .foregroundColor(.secondary)
-                         
-                         ScrollView {
-                            Text(inferenceEngine.status)
-                                .font(.caption)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(8)
-                         }
-                         .frame(height: 100)
-                         .background(Color.black.opacity(0.8))
-                         .foregroundColor(.green)
-                         .cornerRadius(8)
                     }
                 }
-                .padding()
             }
             .navigationTitle("Native RVC Demo")
+            .toolbarColorScheme(.dark, for: .navigationBar)
         }
         .onChange(of: inferenceEngine.status) { oldValue, newValue in
              statusMessage = newValue 
@@ -409,109 +203,416 @@ struct ContentView: View {
             allowedContentTypes: [UTType(filenameExtension: "safetensors")!, UTType(filenameExtension: "npz")!, UTType(filenameExtension: "pth")!, UTType.zip],
             allowsMultipleSelection: false
         ) { result in
-            do {
-                guard let selectedFile: URL = try result.get().first else { return }
-                
-                // Check if .pth or .zip
-                if selectedFile.pathExtension.lowercased() == "pth" || selectedFile.pathExtension.lowercased() == "zip" {
-                    statusMessage = "Converting model archive (this may take a moment)..."
-                    
-                    // Access security scope
-                    if selectedFile.startAccessingSecurityScopedResource() {
-                        defer { selectedFile.stopAccessingSecurityScopedResource() }
-                        
-                        Task {
-                            // Run on background thread (detached) to avoid blocking main actor
-                            // PthConverter is now thread-safe / nonisolated
-                            await MainActor.run { 
-                                isConverting = true 
-                                conversionProgress = 0.0
-                            }
-                            
-                            do {
-                                let arrays = try PthConverter.shared.convert(url: selectedFile) { progress, msg in
-                                    Task { @MainActor in
-                                        self.conversionProgress = progress
-                                        self.statusMessage = msg
-                                    }
-                                }
-                                
-                                // Save as .safetensors
-                                let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-                                let name = selectedFile.deletingPathExtension().lastPathComponent
-                                let dest = docs.appendingPathComponent(name + ".safetensors")
-                                
-                                try MLX.save(arrays: arrays, url: dest)
-                                
-                                await MainActor.run {
-                                    statusMessage = "Converted & Imported: \(name)"
-                                    log("Converted model saved to \(dest.path)")
-                                    isConverting = false
-                                    conversionProgress = 1.0
-                                }
-                            } catch {
-                                await MainActor.run {
-                                    statusMessage = "Conversion Failed: \(error.localizedDescription)"
-                                    log("Conversion error: \(error)")
-                                    
-                                    alertMessage = "Conversion Failed.\n\nError: \(error.localizedDescription)"
-                                    showAlert = true
-                                    isConverting = false
-                                }
-                            }
-                        }
-                    } else {
-                        statusMessage = "Access denied"
-                    }
-                    return
-                }
-                
-                if selectedFile.startAccessingSecurityScopedResource() {
-                     defer { selectedFile.stopAccessingSecurityScopedResource() }
-                     
-                     // Destination: Documents Directory
-                     let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-                     let dest = docs.appendingPathComponent(selectedFile.lastPathComponent)
-                     
-                     // Remove if exists
-                     if FileManager.default.fileExists(atPath: dest.path) {
-                         try? FileManager.default.removeItem(at: dest)
-                     }
-                     
-                     try FileManager.default.copyItem(at: selectedFile, to: dest)
-                     
-                     statusMessage = "Imported: \(selectedFile.lastPathComponent)"
-                     log("Imported model to \(dest.path)")
-                } else {
-                     statusMessage = "Access denied"
-                }
-            } catch {
-                statusMessage = "Error: \(error.localizedDescription)"
-                log("Import error: \(error)")
-            }
+             handleFileImport(result: result)
         }
         .alert("Import Failed", isPresented: $showAlert) {
             Button("OK", role: .cancel) { }
         } message: {
             Text(alertMessage)
         }
-        .onAppear {
-            inferenceEngine.onLog = { msg in
-                self.log(msg)
+        .sheet(isPresented: $isManagingModels) {
+            ModelManagerView(isPresented: $isManagingModels) { deletedName in
+                if selectedModel == deletedName {
+                    selectedModel = "Select Model"
+                    isModelLoaded = false
+                    statusMessage = "Select a model"
+                }
+                refreshImportedModels()
             }
-            // Default load
-            loadModel(name: "Slim Shady")
+        }
+        .onAppear {
+            setupInitialState()
+        }
+    }
+    
+    // MARK: - Subviews
+    
+    // Liquid Background
+    private var backgroundGradient: some View {
+        LinearGradient(
+            colors: [Color.black, Color.blue.opacity(0.4), Color.purple.opacity(0.3)],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+        .ignoresSafeArea()
+    }
+    
+    private var headerView: some View {
+        Text("Powered by MLX Swift")
+            .font(.subheadline)
+            .foregroundStyle(.white.opacity(0.7))
+    }
+    
+    // Model Selection Card
+    private var modelSelectionView: some View {
+        HStack {
+            Text("Model:")
+                .foregroundStyle(.white)
+            Spacer()
+            Menu {
+                Section("Bundle Models") {
+                    Button("Coder", action: { loadModel(name: "Coder") })
+                    Button("Slim Shady", action: { loadModel(name: "Slim Shady") })
+                }
+                
+                Section("Imported Models") {
+                    if importedModels.isEmpty {
+                        Text("No imported models")
+                    } else {
+                        ForEach(importedModels, id: \.self) { modelName in
+                            Button(modelName) {
+                                loadModel(name: modelName, isImported: true)
+                            }
+                        }
+                    }
+                }
+                
+                Divider()
+                
+                Button(action: { isImporting = true }) {
+                    Label("Import Model (.safetensors)", systemImage: "square.and.arrow.down")
+                }
+                
+                Button(action: { isManagingModels = true }) {
+                    Label("Manage Models", systemImage: "trash")
+                }
+            } label: {
+                Text(selectedModel)
+                    .padding(.horizontal)
+                    .padding(.vertical, 8)
+                    .glassEffect(in: .rect(cornerRadius: 8))
+            }
+        }
+        .padding()
+        .glassEffect(in: .rect(cornerRadius: 16))
+    }
+    
+    // Volume Envelope Slider Card
+    private var volumeControlView: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Text("Volume Envelope (Reduce Noise)")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.8))
+                Spacer()
+                Text(String(format: "%.2f", volumeEnvelope))
+                    .font(.caption)
+                    .monospacedDigit()
+                    .foregroundStyle(.white)
+            }
+            Slider(value: $volumeEnvelope, in: 0.0...1.0, step: 0.05)
+                .tint(.cyan)
+        }
+        .padding()
+        .glassEffect(in: .rect(cornerRadius: 16))
+    }
+    
+    @ViewBuilder
+    private var audioInputControlView: some View {
+        Group {
+            // Actions
+            Button(action: {
+                isImporting = true
+            }) {
+                HStack {
+                    Image(systemName: "waveform.circle")
+                    Text(inputURL == nil ? "Select Audio File" : "Selected: \(inputURL?.lastPathComponent ?? "File")")
+                }
+                .font(.headline)
+                .frame(maxWidth: .infinity)
+                .padding()
+                .glassEffect(in: .rect(cornerRadius: 12))
+                .foregroundColor(.cyan)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(Color.cyan.opacity(0.3), lineWidth: 1)
+                )
+            }
             
-            // Pre-load audio
-            if inputURL == nil {
-                if let stock = stockAudioURL {
-                    self.inputURL = stock
-                    statusMessage = "Loaded stock audio: \(stock.lastPathComponent)"
-                    
-                    // Extract waveform immediately
-                    originalWaveform = AudioWaveformExtractor.extractSamples(from: stock)
+            // Audio Loaded Indicator
+            if let input = inputURL {
+                HStack {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundColor(.green)
+                    Text("Ready to convert: \(input.lastPathComponent)")
+                        .font(.caption)
+                        .foregroundColor(.white.opacity(0.7))
+                }
+            } else if let stock = stockAudioURL {
+                Text("Using stock audio: \(stock.lastPathComponent)")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.5))
+            }
+            
+            // Play Original
+            if let url = inputURL {
+                Button(action: {
+                    if inputPlayer.isPlaying {
+                        inputPlayer.stop()
+                    } else {
+                        inputPlayer.play(url: url)
+                    }
+                }) {
+                    HStack {
+                        Image(systemName: inputPlayer.isPlaying ? "stop.fill" : "play.fill")
+                        Text(inputPlayer.isPlaying ? "Stop Original" : "Play Original")
+                    }
+                    .font(.subheadline)
+                    .foregroundColor(.white)
+                    .padding(.vertical, 4)
+                    .padding(.horizontal, 12)
+                    .glassEffect(in: .capsule)
                 }
             }
+            
+            // Audio Recording
+            if audioRecorder.isRecording {
+                Button(action: { audioRecorder.stopRecording() }) {
+                    HStack {
+                        Image(systemName: "stop.circle.fill")
+                        Text("Stop Recording")
+                    }
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                    .background(Color.red.opacity(0.5))
+                    .glassEffect(in: .rect(cornerRadius: 12))
+                    .foregroundColor(.white)
+                }
+            } else {
+                Button(action: { audioRecorder.startRecording() }) {
+                    HStack {
+                        Image(systemName: "mic.circle.fill")
+                        Text("Record Audio")
+                    }
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                    .glassEffect(in: .rect(cornerRadius: 12))
+                    .foregroundColor(.red.opacity(0.8))
+                }
+            }
+        }
+    }
+    
+    // Conversion Progress Bar
+    private var conversionProgressView: some View {
+        Group {
+            if isConverting {
+                VStack(spacing: 8) {
+                    ProgressView(value: conversionProgress, total: 1.0)
+                        .progressViewStyle(LinearProgressViewStyle())
+                        .tint(.cyan)
+                    Text("\(Int(conversionProgress * 100))% - \(statusMessage)")
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.7))
+                }
+                .padding()
+                .glassEffect(in: .rect(cornerRadius: 8))
+            }
+        }
+    }
+    
+    private var inferenceButtonView: some View {
+        Button(action: {
+            Task {
+                await startInference()
+            }
+        }) {
+            HStack {
+                if isProcessing {
+                    ProgressView()
+                        .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                } else {
+                    Image(systemName: "bolt.fill")
+                }
+                Text(isProcessing ? "Inferencing..." : "Convert Voice")
+            }
+            .font(.headline)
+            .frame(maxWidth: .infinity)
+            .padding()
+            .background(isProcessing || !isModelLoaded ? Color.gray.opacity(0.3) : Color.green.opacity(0.6))
+            .glassEffect(in: .rect(cornerRadius: 12)) // Highlighting primary action
+            .foregroundColor(.white)
+            .shadow(color: .green.opacity(0.4), radius: 10, x: 0, y: 5)
+        }
+        .disabled(isProcessing || inputURL == nil || !isModelLoaded)
+    }
+    
+    // Play Converted
+    private var resultView: some View {
+        Group {
+            if let url = outputURL, !isProcessing {
+                Divider().overlay(.white.opacity(0.2))
+                Text("Result")
+                    .font(.headline)
+                    .foregroundStyle(.white)
+                
+                Button(action: {
+                    if outputPlayer.isPlaying {
+                        outputPlayer.stop()
+                    } else {
+                        outputPlayer.play(url: url)
+                    }
+                }) {
+                    HStack {
+                        Image(systemName: outputPlayer.isPlaying ? "stop.circle.fill" : "play.circle.fill")
+                        Text(outputPlayer.isPlaying ? "Stop Converted" : "Play Converted")
+                    }
+                    .font(.title2)
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                    .background(Color.green.opacity(0.2))
+                    .glassEffect(in: .rect(cornerRadius: 12))
+                    .foregroundColor(.green)
+                }
+                
+                // Waveform comparison
+                if !originalWaveform.isEmpty && !convertedWaveform.isEmpty {
+                    WaveformComparisonView(
+                        originalSamples: originalWaveform,
+                        convertedSamples: convertedWaveform
+                    )
+                    .glassEffect(in: .rect(cornerRadius: 12))
+                }
+            }
+        }
+    }
+    
+    // Status Log
+    private var consoleOutputView: some View {
+        VStack(alignment: .leading) {
+            Text("Console Output")
+                .font(.caption)
+                .bold()
+                .foregroundColor(.white.opacity(0.6))
+            
+            ScrollView {
+                Text(inferenceEngine.status)
+                    .font(.caption)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
+                    .foregroundStyle(.green)
+            }
+            .frame(height: 100)
+            .background(Color.black.opacity(0.4))
+            .cornerRadius(8)
+        }
+        .padding()
+        .glassEffect(in: .rect(cornerRadius: 12))
+    }
+    
+    // MARK: - Logic Helpers
+    
+    func setupInitialState() {
+        inferenceEngine.onLog = { msg in
+            self.log(msg)
+        }
+        
+        refreshImportedModels()
+        
+        // Default load
+        loadModel(name: "Slim Shady")
+        
+        // Pre-load audio
+        if inputURL == nil {
+            if let stock = stockAudioURL {
+                self.inputURL = stock
+                statusMessage = "Loaded stock audio: \(stock.lastPathComponent)"
+                
+                // Extract waveform immediately
+                originalWaveform = AudioWaveformExtractor.extractSamples(from: stock)
+            }
+        }
+    }
+
+    func handleFileImport(result: Result<[URL], Error>) {
+        do {
+            guard let selectedFile: URL = try result.get().first else { return }
+            
+            // Check if .pth or .zip
+            if selectedFile.pathExtension.lowercased() == "pth" || selectedFile.pathExtension.lowercased() == "zip" {
+                statusMessage = "Converting model archive (this may take a moment)..."
+                
+                // Access security scope
+                // IMPORTANT: We must keep the scope open until the async task is done.
+                // We cannot use 'defer' in this block because it exits immediately.
+                let accessSucceeded = selectedFile.startAccessingSecurityScopedResource()
+                if !accessSucceeded {
+                    statusMessage = "Access denied"
+                    return
+                }
+                
+                Task {
+                    // Ensure we stop accessing when this Task finishes
+                    defer { selectedFile.stopAccessingSecurityScopedResource() }
+                    
+                    // Run on background thread (detached) to avoid blocking main actor
+                    // PthConverter is now thread-safe / nonisolated
+                    await MainActor.run { 
+                        isConverting = true 
+                        conversionProgress = 0.0
+                    }
+                    
+                    do {
+                        let arrays = try PthConverter.shared.convert(url: selectedFile) { progress, msg in
+                            Task { @MainActor in
+                                self.conversionProgress = progress
+                                self.statusMessage = msg
+                            }
+                        }
+                        
+                        // Save as .safetensors
+                        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                        let name = selectedFile.deletingPathExtension().lastPathComponent
+                        let dest = docs.appendingPathComponent(name + ".safetensors")
+                        
+                        try MLX.save(arrays: arrays, url: dest)
+                        
+                        await MainActor.run {
+                            statusMessage = "Converted & Imported: \(name)"
+                            log("Converted model saved to \(dest.path)")
+                            isConverting = false
+                            conversionProgress = 1.0
+                            refreshImportedModels()
+                        }
+                    } catch {
+                        await MainActor.run {
+                            statusMessage = "Conversion Failed: \(error.localizedDescription)"
+                            log("Conversion error: \(error)")
+                            
+                            alertMessage = "Conversion Failed.\n\nError: \(error.localizedDescription)"
+                            showAlert = true
+                            isConverting = false
+                        }
+                    }
+                }
+                return
+            }
+            
+            if selectedFile.startAccessingSecurityScopedResource() {
+                 defer { selectedFile.stopAccessingSecurityScopedResource() }
+                 
+                 // Destination: Documents Directory
+                 let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                 let dest = docs.appendingPathComponent(selectedFile.lastPathComponent)
+                 
+                 // Remove if exists
+                 if FileManager.default.fileExists(atPath: dest.path) {
+                     try? FileManager.default.removeItem(at: dest)
+                 }
+                 
+                 try FileManager.default.copyItem(at: selectedFile, to: dest)
+                 
+                 statusMessage = "Imported: \(selectedFile.lastPathComponent)"
+                 log("Imported model to \(dest.path)")
+                 refreshImportedModels()
+            } else {
+                 statusMessage = "Access denied"
+            }
+        } catch {
+            statusMessage = "Error: \(error.localizedDescription)"
+            log("Import error: \(error)")
         }
     }
     
@@ -522,10 +623,13 @@ struct ContentView: View {
         }
     }
     
-    func getImportedModels() -> [String] {
+    func refreshImportedModels() {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        guard let files = try? FileManager.default.contentsOfDirectory(at: docs, includingPropertiesForKeys: nil) else { return [] }
-        return files
+        guard let files = try? FileManager.default.contentsOfDirectory(at: docs, includingPropertiesForKeys: nil) else { 
+            self.importedModels = []
+            return 
+        }
+        self.importedModels = files
             .filter { $0.pathExtension == "safetensors" || $0.pathExtension == "npz" }
             .map { $0.deletingPathExtension().lastPathComponent }
     }
@@ -630,6 +734,87 @@ struct ContentView: View {
         // Extract converted waveform after conversion
         convertedWaveform = AudioWaveformExtractor.extractSamples(from: output)
         log("Extracted \(convertedWaveform.count) samples from converted audio")
+    }
+}
+
+struct ModelManagerView: View {
+    @Binding var isPresented: Bool
+    @State private var models: [String] = []
+    var onModelDeleted: (String) -> Void
+    
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                // Liquid Background (Matched)
+                LinearGradient(
+                    colors: [Color.black, Color.blue.opacity(0.4), Color.purple.opacity(0.3)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                .ignoresSafeArea()
+                
+                GlassEffectContainer {
+                    if models.isEmpty {
+                        VStack {
+                            Image(systemName: "cube.transparent")
+                                .font(.system(size: 50))
+                                .foregroundStyle(.white.opacity(0.5))
+                            Text("No imported models")
+                                .foregroundStyle(.white.opacity(0.7))
+                        }
+                    } else {
+                        List {
+                            ForEach(models, id: \.self) { model in
+                                Text(model)
+                                    .foregroundStyle(.white)
+                                    .listRowBackground(Color.clear)
+                                    .listRowSeparatorTint(.white.opacity(0.2))
+                            }
+                            .onDelete(perform: deleteModel)
+                        }
+                        .scrollContentBackground(.hidden) // Remove default List background
+                    }
+                }
+            }
+            .navigationTitle("Manage Models")
+            .toolbarColorScheme(.dark, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { isPresented = false }
+                        .foregroundStyle(.cyan)
+                }
+            }
+            .onAppear(perform: loadModels)
+        }
+    }
+    
+    func loadModels() {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        guard let files = try? FileManager.default.contentsOfDirectory(at: docs, includingPropertiesForKeys: nil) else { return }
+        
+        models = files
+            .filter { $0.pathExtension == "safetensors" || $0.pathExtension == "npz" }
+            .map { $0.deletingPathExtension().lastPathComponent }
+            .sorted()
+    }
+    
+    func deleteModel(at offsets: IndexSet) {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        
+        for index in offsets {
+            let modelName = models[index]
+            
+            // Try deleting .safetensors and .npz
+            let safe = docs.appendingPathComponent("\(modelName).safetensors")
+            let npz = docs.appendingPathComponent("\(modelName).npz")
+            
+            try? FileManager.default.removeItem(at: safe)
+            try? FileManager.default.removeItem(at: npz)
+            
+            onModelDeleted(modelName)
+        }
+        
+        models.remove(atOffsets: offsets)
     }
 }
 

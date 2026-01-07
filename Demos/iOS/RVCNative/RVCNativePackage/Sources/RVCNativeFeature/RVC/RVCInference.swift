@@ -318,7 +318,9 @@ import MLXNN
                 log("DEBUG DATA DUMP:")
                 
                 // 1. F0 (Raw Hz)
-                let f0Data = nsff0.asType(Float.self)[0..., 0..<min(20, p_len_val), 0]
+                // 1. F0 (Raw Hz)
+                // Fix: Index [0] for batch to get rank-1 array [T]
+                let f0Data = nsff0.asType(Float.self)[0, 0..<min(20, p_len_val), 0]
                 var f0Str = "F0 (First 20): ["
                 for i in 0..<f0Data.shape[0] {
                      f0Str += String(format: "%.4f, ", f0Data[i].item(Float.self))
