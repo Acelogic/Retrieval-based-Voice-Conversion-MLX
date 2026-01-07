@@ -266,25 +266,118 @@ class DeepUnet: Module {
     }
 }
 
-// MARK: - BiGRU
+// MARK: - PyTorchGRU (matches PyTorch's exact formula)
+
+/// GRU implementation that exactly matches PyTorch's GRU formula:
+/// r_t = σ(W_ir @ x_t + b_ir + W_hr @ h_{t-1} + b_hr)
+/// z_t = σ(W_iz @ x_t + b_iz + W_hz @ h_{t-1} + b_hz)
+/// n_t = tanh(W_in @ x_t + b_in + r_t * (W_hn @ h_{t-1} + b_hn))
+/// h_t = (1 - z_t) * n_t + z_t * h_{t-1}
+class PyTorchGRU: Module {
+    let inputSize: Int
+    let hiddenSize: Int
+    
+    // Weight matrices: [3*H, D] and [3*H, H]
+    var weight_ih: MLXArray
+    var weight_hh: MLXArray
+    
+    // Bias vectors: [3*H] each
+    var bias_ih: MLXArray?
+    var bias_hh: MLXArray?
+    
+    init(inputSize: Int, hiddenSize: Int, bias: Bool = true) {
+        self.inputSize = inputSize
+        self.hiddenSize = hiddenSize
+        
+        let scale = 1.0 / sqrt(Float(hiddenSize))
+        self.weight_ih = MLXRandom.uniform(low: -scale, high: scale, [3 * hiddenSize, inputSize])
+        self.weight_hh = MLXRandom.uniform(low: -scale, high: scale, [3 * hiddenSize, hiddenSize])
+        
+        if bias {
+            self.bias_ih = MLX.zeros([3 * hiddenSize])
+            self.bias_hh = MLX.zeros([3 * hiddenSize])
+        } else {
+            self.bias_ih = nil
+            self.bias_hh = nil
+        }
+        
+        super.init()
+    }
+    
+    func callAsFunction(_ x: MLXArray) -> MLXArray {
+        // x: [B, L, D]
+        let B = x.shape[0]
+        let L = x.shape[1]
+        let H = hiddenSize
+        
+        // Initialize hidden state
+        var h = MLX.zeros([B, H])
+        
+        var outputs: [MLXArray] = []
+        
+        for t in 0..<L {
+            let x_t = x[0..., t, 0...]  // [B, D]
+            
+            // Input projection: [B, 3*H]
+            var gi = matmul(x_t, weight_ih.T)
+            if let bias_ih = bias_ih {
+                gi = gi + bias_ih
+            }
+            
+            // Hidden projection: [B, 3*H]
+            var gh = matmul(h, weight_hh.T)
+            if let bias_hh = bias_hh {
+                gh = gh + bias_hh
+            }
+            
+            // Split into gates (r, z, n order matches PyTorch)
+            let i_r = gi[0..., 0..<H]
+            let i_z = gi[0..., H..<(2*H)]
+            let i_n = gi[0..., (2*H)...]
+            
+            let h_r = gh[0..., 0..<H]
+            let h_z = gh[0..., H..<(2*H)]
+            let h_n = gh[0..., (2*H)...]
+            
+            // Reset gate
+            let r_t = sigmoid(i_r + h_r)
+            
+            // Update gate
+            let z_t = sigmoid(i_z + h_z)
+            
+            // New gate
+            let n_t = tanh(i_n + r_t * h_n)
+            
+            // New hidden state
+            h = (1 - z_t) * n_t + z_t * h
+            
+            outputs.append(h)
+        }
+        
+        // Stack outputs: [B, L, H]
+        return stacked(outputs, axis: 1)
+    }
+}
+
+// MARK: - BiGRU (using PyTorchGRU)
 
 class BiGRU: Module {
     let numLayers: Int
     let hiddenFeatures: Int
-    let forwardGRUs: [GRU]
-    let backwardGRUs: [GRU]
+    let forwardGRUs: [PyTorchGRU]
+    let backwardGRUs: [PyTorchGRU]
     
     init(inputFeatures: Int, hiddenFeatures: Int, numLayers: Int) {
         self.numLayers = numLayers
         self.hiddenFeatures = hiddenFeatures
         
-        var _fwd: [GRU] = []
-        var _bwd: [GRU] = []
+        var _fwd: [PyTorchGRU] = []
+        var _bwd: [PyTorchGRU] = []
         
         for i in 0..<numLayers {
             let dim = (i == 0) ? inputFeatures : hiddenFeatures * 2
-            _fwd.append(GRU(inputSize: dim, hiddenSize: hiddenFeatures, bias: true))
-            _bwd.append(GRU(inputSize: dim, hiddenSize: hiddenFeatures, bias: true))
+            _fwd.append(PyTorchGRU(inputSize: dim, hiddenSize: hiddenFeatures, bias: true))
+            _bwd.append(PyTorchGRU(inputSize: dim, hiddenSize: hiddenFeatures, bias: true))
         }
         self.forwardGRUs = _fwd
         self.backwardGRUs = _bwd
@@ -301,7 +394,6 @@ class BiGRU: Module {
             let outFwd = fwd(x) // [N, L, H]
             
             // Reverse for backward along axis 1 (L)
-            // Using deprecated stride subscript as it is robust without full MLXArrayIndex inference
             let xRev = x[0..., .stride(by: -1), 0...]
             let outBwdRev = bwd(xRev)
             let outBwd = outBwdRev[0..., .stride(by: -1), 0...]
@@ -354,6 +446,9 @@ class RMVPE: Module {
         x = cnn(x) // [N, T, n_mels, 3]
         
         // Reshape for GRU: [N, T, n_mels * 3]
+        // CRITICAL: Transpose to [N, T, 3, n_mels] BEFORE flattening to match Python!
+        x = x.transposed(axes: [0, 1, 3, 2])
+        
         let shape = x.shape
         let B = shape[0]
         let T = shape[1]
@@ -363,6 +458,7 @@ class RMVPE: Module {
         x = linear(x) // [N, T, 360]
         x = dropout(x)
         x = sigmoid(x)
+        
         return x
     }
     
@@ -430,18 +526,30 @@ class RMVPE: Module {
         var centsPred = MLXArray(centsPredArray)
 
         // Apply threshold based on max salience
+        // Python: cents_pred[maxx <= thred] = 0
+        // This zeros out cents_pred for unvoiced segments (low salience)
         let maxx = MLX.max(salience, axis: 1)  // [T]
-        let mask = maxx .> thred
-        centsPred = centsPred * mask.asType(centsPred.dtype)
+        
+        // DEBUG: Check maxx values
+        let maxxMin = maxx.min().item(Float.self)
+        let maxxMax = maxx.max().item(Float.self)
+        let maxxMean = maxx.mean().item(Float.self)
+        print("DEBUG RMVPE: maxx stats: min=\(maxxMin), max=\(maxxMax), mean=\(maxxMean), thred=\(thred)")
+        
+        let voicedMask = maxx .> thred  // True where voiced (high salience)
+        let numVoiced = MLX.sum(voicedMask.asType(Float.self)).item(Float.self)
+        print("DEBUG RMVPE: voiced frames: \(numVoiced) / \(T) (\(100*numVoiced/Float(T))%)")
+        
+        centsPred = centsPred * voicedMask.asType(centsPred.dtype)
 
         // Convert cents to F0 using CORRECT formula
         // Python line 401: f0 = 10 * (2 ** (cents_pred / 1200))
-        // This is the fix that achieved 0.986 correlation!
         var f0 = 10.0 * MLX.pow(2.0, centsPred / 1200.0)
 
-        // Zero out where cents_pred was 0 (f0 would be 10.0)
-        let zeroMask = centsPred .== 0.0
-        f0 = f0 * (1.0 - zeroMask.asType(f0.dtype))
+        // Zero out unvoiced frames (where f0 would be ~10 Hz)
+        // Python line 402: f0[f0 == 10] = 0
+        // Use voicedMask directly since that's more reliable than floating point comparison
+        f0 = f0 * voicedMask.asType(f0.dtype)
 
         return f0.expandedDimensions(axis: -1)  // [T, 1]
     }
