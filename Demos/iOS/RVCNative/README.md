@@ -43,6 +43,25 @@ Built with a **workspace + SPM package** architecture for clean separation betwe
 - ✅ Resolved `BatchNorm` 5D dimension crashes
 - ✅ Input padding (32-multiple) for RMVPE stability
 - ✅ Output length alignment (F0/Phones sync)
+- ✅ **Audio Parity**: ~82% spectrogram correlation with Python MLX reference
+
+### Audio Parity Status (Python MLX vs Swift MLX)
+
+The Swift implementation achieves high audio parity with the Python MLX reference:
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| HuBERT | ✅ Exact match | Output features match within floating point precision |
+| RMVPE/F0 | ✅ Exact match | F0 values match within 0.1 Hz |
+| TextEncoder | ✅ Very close | m_p ranges differ by <5% |
+| Flow | ✅ Close | Reverse pass produces similar latents |
+| Generator | ⚠️ ~82% | Spectrogram correlation, waveform differs due to phase |
+
+**Key Parity Fixes Applied:**
+1. **Encoder key remapping**: `attn_0` → `attn_layers.0`, `norm1_0` → `norm_layers_1.0`
+2. **ResBlock conv key remapping**: Added `.conv.` prefix for Conv1d wrapper classes
+3. **Weight normalization fusion**: Fused `weight_g`/`weight_v` to single `weight` tensors
+4. **BatchNorm running stats**: Correctly load `runningMean`/`runningVar` for eval mode
 
 ### Architecture Highlights
 

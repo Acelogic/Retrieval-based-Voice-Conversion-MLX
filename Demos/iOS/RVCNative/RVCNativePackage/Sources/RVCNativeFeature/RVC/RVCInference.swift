@@ -203,6 +203,34 @@ import MLXNN
                     newK = newK.replacingOccurrences(of: ".convs2.", with: ".c2_")
                 }
 
+                // 1b. Remap fused resblock conv weights: dec.resblock_X.c1_Y.weight -> dec.resblock_X.c1_Y.conv.weight
+                // Swift's Conv1d wrapper has a nested .conv property
+                if newK.contains("dec.resblock_") && (newK.contains(".c1_") || newK.contains(".c2_")) {
+                    let oldKey = newK
+                    if newK.hasSuffix(".weight") && !newK.contains(".conv.") {
+                        newK = newK.replacingOccurrences(of: ".weight", with: ".conv.weight")
+                        if oldKey.contains("c1_0") && oldKey.contains("resblock_0") {
+                            log("DEBUG: Remapped resblock key: \(oldKey) -> \(newK)")
+                        }
+                    }
+                    if newK.hasSuffix(".bias") && !newK.contains(".conv.") {
+                        newK = newK.replacingOccurrences(of: ".bias", with: ".conv.bias")
+                    }
+                }
+
+                // 1c. Remap TextEncoder encoder keys: attn_X -> attn_layers.X, norm1_X -> norm_layers_1.X, etc.
+                // Python: setattr(self, f"attn_{i}", l) creates enc_p.encoder.attn_0
+                // Swift: uses arrays like enc_p.encoder.attn_layers.0
+                if newK.contains("enc_p.encoder.") {
+                    // Remap layer names: attn_X -> attn_layers.X, etc.
+                    for i in 0..<6 {  // Assuming max 6 layers
+                        newK = newK.replacingOccurrences(of: "encoder.attn_\(i).", with: "encoder.attn_layers.\(i).")
+                        newK = newK.replacingOccurrences(of: "encoder.norm1_\(i).", with: "encoder.norm_layers_1.\(i).")
+                        newK = newK.replacingOccurrences(of: "encoder.ffn_\(i).", with: "encoder.ffn_layers.\(i).")
+                        newK = newK.replacingOccurrences(of: "encoder.norm2_\(i).", with: "encoder.norm_layers_2.\(i).")
+                    }
+                }
+
                 // 2. Flow index remapping
                 if k.hasPrefix("flow.flows.") {
                     let parts = k.components(separatedBy: ".")
@@ -222,7 +250,8 @@ import MLXNN
                 // }
 
                 // 4. Insert .conv for Conv1d wrapper classes in Generator
-                if needsConvInsertion(newK) {
+                // IMPORTANT: Check !contains(".conv.") to prevent double insertion (resblocks handled in section 1b)
+                if needsConvInsertion(newK) && !newK.contains(".conv.") {
                     if newK.hasSuffix(".weight") {
                         newK = String(newK.dropLast(7)) + ".conv.weight"
                     } else if newK.hasSuffix(".bias") {
@@ -238,6 +267,10 @@ import MLXNN
             }
 
             log("RVCInference: About to load \(synthParams.count) parameters into Synthesizer")
+
+            // DEBUG: Show sample of remapped resblock keys
+            let resblockKeys = synthParams.keys.filter { $0.contains("resblock_0.c1_0") }.sorted()
+            log("DEBUG: Resblock_0.c1_0 keys after remapping: \(resblockKeys)")
             
             // 5. CRITICAL: Fuse weight normalization for ConvTransposed1d layers
             // PyTorch weight normalization: weight = g * (v / ||v||)
@@ -297,9 +330,32 @@ import MLXNN
             log("RVCInference: After weight fusion: \(synthParams.count) parameters")
             log("RVCInference: Generator up_0 weight shape in file: \(synthParams["dec.up_0.weight"]?.shape ?? [])")
 
+            // DEBUG: Check emb_phone weight in synthParams BEFORE loading
+            if let embPhoneWeight = synthParams["enc_p.emb_phone.weight"] {
+                MLX.eval(embPhoneWeight)
+                log("DEBUG: synthParams[enc_p.emb_phone.weight] BEFORE update: shape=\(embPhoneWeight.shape), range=[\(embPhoneWeight.min().item(Float.self))...\(embPhoneWeight.max().item(Float.self))]")
+            } else {
+                log("DEBUG: synthParams[enc_p.emb_phone.weight] NOT FOUND!")
+            }
+
             self.synthesizer?.update(parameters: ModuleParameters.unflattened(synthParams))
             self.synthesizer?.train(false)  // CRITICAL: Set to eval mode (disables Dropout, uses BatchNorm running stats)
             log("RVCInference: Successfully loaded Synthesizer with \(synthParams.count) weight keys")
+
+            // DEBUG: Verify weights are loaded correctly
+            if let synth = self.synthesizer {
+                // Check TextEncoder weights
+                let emb_phone = synth.enc_p.emb_phone.weight
+                log("DEBUG: enc_p.emb_phone.weight: shape=\(emb_phone.shape), range=[\(emb_phone.min().item(Float.self))...\(emb_phone.max().item(Float.self))]")
+                if let emb_pitch = synth.enc_p.emb_pitch {
+                    let w = emb_pitch.weight
+                    log("DEBUG: enc_p.emb_pitch.weight: shape=\(w.shape), range=[\(w.min().item(Float.self))...\(w.max().item(Float.self))]")
+                }
+
+                // Check Generator resblock weights
+                let w0 = synth.dec.resblock_0.c1_0.conv.weight
+                log("DEBUG: resblock_0.c1_0.conv.weight (kernel=3): shape=\(w0.shape), range=[\(w0.min().item(Float.self))...\(w0.max().item(Float.self))]")
+            }
             
             // 3. Load RMVPE (Optional)
             if let rmvpeURL = rmvpeURL {
