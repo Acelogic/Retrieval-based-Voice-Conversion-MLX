@@ -59,6 +59,21 @@ def convert_pytorch_to_mlx_safetensors(pytorch_model_path: Path, output_path: Pa
 
         # Convert tensor to numpy then MLX
         numpy_array = value.detach().cpu().numpy()
+        
+        # TRANSPOSE CONV WEIGHTS: 
+        if "weight" in new_key:
+            if numpy_array.ndim == 4:
+                # Conv2d: PyTorch [Out, In, H, W] -> MLX [Out, H, W, In]
+                # Default for Conv2d. For ConvTranspose2d, we handle it if detected.
+                numpy_array = numpy_array.transpose(0, 2, 3, 1)
+            elif numpy_array.ndim == 3 and "emb" not in new_key:
+                if "dec.ups" in key or "dec.up_" in new_key:
+                    # ConvTranspose1d: PyTorch [In, Out, K] -> MLX [Out, K, In]
+                    numpy_array = numpy_array.transpose(1, 2, 0)
+                else:
+                    # Conv1d: PyTorch [Out, In, K] -> MLX [Out, K, In]
+                    numpy_array = numpy_array.transpose(0, 2, 1)
+        
         mlx_array = mx.array(numpy_array)
 
         mlx_weights[new_key] = mlx_array
@@ -110,6 +125,15 @@ def convert_hubert_model(hubert_path: Path, output_path: Path):
     for key, value in checkpoint.items():
         if isinstance(value, torch.Tensor):
             numpy_array = value.detach().cpu().numpy()
+            
+            # TRANSPOSE CONV WEIGHTS: 
+            # 3D: PyTorch [Out, In, K] -> MLX [Out, K, In]
+            if numpy_array.ndim == 3 and "weight" in key and "emb" not in key:
+                numpy_array = numpy_array.transpose(0, 2, 1)
+            # 4D: PyTorch [Out, In, H, W] -> MLX [Out, H, W, In]
+            elif numpy_array.ndim == 4 and "weight" in key:
+                numpy_array = numpy_array.transpose(0, 2, 3, 1)
+                
             mlx_array = mx.array(numpy_array)
             mlx_weights[key] = mlx_array
             print(f"  {key}: {mlx_array.shape}")
@@ -149,6 +173,20 @@ def convert_rmvpe_model(rmvpe_path: Path, output_path: Path):
         for key, value in state_dict.items():
             if isinstance(value, torch.Tensor):
                 numpy_array = value.detach().cpu().numpy()
+                
+                # TRANSPOSE CONV WEIGHTS: 
+                # 3D: PyTorch [Out, In, K] -> MLX [Out, K, In]
+                if numpy_array.ndim == 3 and "weight" in key and "emb" not in key:
+                    numpy_array = numpy_array.transpose(0, 2, 1)
+                # 4D: 
+                elif numpy_array.ndim == 4 and "weight" in key:
+                    # RMVPE ConvTranspose2d: PyTorch [In, Out, H, W] -> MLX [Out, H, W, In]
+                    if "conv1.0" in key or "conv1_trans" in key:
+                        numpy_array = numpy_array.transpose(1, 2, 3, 0)
+                    else:
+                        # Conv2d: PyTorch [Out, In, H, W] -> MLX [Out, H, W, In]
+                        numpy_array = numpy_array.transpose(0, 2, 3, 1)
+                
                 mlx_array = mx.array(numpy_array)
                 mlx_weights[key] = mlx_array
                 print(f"  {key}: {mlx_array.shape}")

@@ -151,34 +151,35 @@ class HubertLayer: Module {
 }
 
 class HubertPositionalConvEmbedding: Module {
-    let weight: MLXArray
-    let bias: MLXArray
+    let conv: MLXNN.Conv1d
     let groups: Int = 16
     let padding: Int = 64
 
     init(config: HubertConfig) {
         let hiddenSize = config.hiddenSize
         let kernelSize = 128
-        let inChannelsPerGroup = hiddenSize / self.groups
-
-        self.weight = MLXArray.zeros([hiddenSize, kernelSize, inChannelsPerGroup])
-        self.bias = MLXArray.zeros([hiddenSize])
+        
+        self.conv = MLXNN.Conv1d(
+            inputChannels: hiddenSize,
+            outputChannels: hiddenSize,
+            kernelSize: kernelSize,
+            stride: 1,
+            padding: padding,
+            groups: groups,
+            bias: true
+        )
         super.init()
     }
 
     func callAsFunction(_ hiddenStates: MLXArray) -> MLXArray {
-        // Conv1d with grouped convolution
-        var out = MLX.conv1d(hiddenStates, weight, stride: 1, padding: padding, groups: groups)
-
-        // Add bias
-        out = out + bias
+        // hiddenStates: [B, T, C]
+        var out = conv(hiddenStates)
 
         // Crop: Remove last time step (kernel=128 is even, remove 1)
         let L = out.shape[1]
         out = out[0..., 0..<(L-1), 0...]
 
-        // CRITICAL: Apply GELU activation (was missing in old implementation!)
-        // This matches Python line 338: out = nn.gelu(out)
+        // CRITICAL: Apply GELU activation
         out = gelu(out)
 
         // Residual connection
@@ -240,32 +241,34 @@ class HubertNoLayerNormConvLayer: Module {
 }
 
 class HubertFeatureExtractor: Module {
-    let conv_layers: [Module]
+    let l0: HubertGroupNormConvLayer
+    let l1: HubertNoLayerNormConvLayer
+    let l2: HubertNoLayerNormConvLayer
+    let l3: HubertNoLayerNormConvLayer
+    let l4: HubertNoLayerNormConvLayer
+    let l5: HubertNoLayerNormConvLayer
+    let l6: HubertNoLayerNormConvLayer
     
     init(config: HubertConfig) {
-        var layers: [Module] = []
-        layers.append(HubertGroupNormConvLayer(config: config, inChannels: 1, outChannels: 512, kernelSize: 10, stride: 5))
-        
-        let kernels = [3, 3, 3, 3, 2, 2]
-        let strides = [2, 2, 2, 2, 2, 2]
-        
-        for (k, s) in zip(kernels, strides) {
-             layers.append(HubertNoLayerNormConvLayer(config: config, inChannels: 512, outChannels: 512, kernelSize: k, stride: s))
-        }
-        
-        self.conv_layers = layers
+        self.l0 = HubertGroupNormConvLayer(config: config, inChannels: 1, outChannels: 512, kernelSize: 10, stride: 5)
+        self.l1 = HubertNoLayerNormConvLayer(config: config, inChannels: 512, outChannels: 512, kernelSize: 3, stride: 2)
+        self.l2 = HubertNoLayerNormConvLayer(config: config, inChannels: 512, outChannels: 512, kernelSize: 3, stride: 2)
+        self.l3 = HubertNoLayerNormConvLayer(config: config, inChannels: 512, outChannels: 512, kernelSize: 3, stride: 2)
+        self.l4 = HubertNoLayerNormConvLayer(config: config, inChannels: 512, outChannels: 512, kernelSize: 3, stride: 2)
+        self.l5 = HubertNoLayerNormConvLayer(config: config, inChannels: 512, outChannels: 512, kernelSize: 2, stride: 2)
+        self.l6 = HubertNoLayerNormConvLayer(config: config, inChannels: 512, outChannels: 512, kernelSize: 2, stride: 2)
         super.init()
     }
     
     func callAsFunction(_ inputValues: MLXArray) -> MLXArray {
         var h = inputValues.expandedDimensions(axis: -1)
-        for layer in conv_layers {
-            if let l = layer as? HubertGroupNormConvLayer {
-                h = l(h)
-            } else if let l = layer as? HubertNoLayerNormConvLayer {
-                h = l(h)
-            }
-        }
+        h = l0(h)
+        h = l1(h)
+        h = l2(h)
+        h = l3(h)
+        h = l4(h)
+        h = l5(h)
+        h = l6(h)
         return h
     }
 }
@@ -294,18 +297,28 @@ class HubertEncoder: Module {
     let pos_conv_embed: HubertPositionalConvEmbedding
     let layer_norm: LayerNorm
     let dropout: Dropout
-    let layers: [HubertLayer]
+    
+    // Explicit properties for 12 layers to ensure weight loading
+    let l0, l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11: HubertLayer
     
     init(config: HubertConfig) {
         self.pos_conv_embed = HubertPositionalConvEmbedding(config: config)
         self.layer_norm = LayerNorm(dimensions: config.hiddenSize, eps: config.layerNormEps)
         self.dropout = Dropout(p: config.hiddenDropoutProb)
         
-        var l: [HubertLayer] = []
-        for _ in 0..<config.numHiddenLayers {
-            l.append(HubertLayer(config: config))
-        }
-        self.layers = l
+        self.l0 = HubertLayer(config: config)
+        self.l1 = HubertLayer(config: config)
+        self.l2 = HubertLayer(config: config)
+        self.l3 = HubertLayer(config: config)
+        self.l4 = HubertLayer(config: config)
+        self.l5 = HubertLayer(config: config)
+        self.l6 = HubertLayer(config: config)
+        self.l7 = HubertLayer(config: config)
+        self.l8 = HubertLayer(config: config)
+        self.l9 = HubertLayer(config: config)
+        self.l10 = HubertLayer(config: config)
+        self.l11 = HubertLayer(config: config)
+        
         super.init()
     }
     
@@ -315,9 +328,19 @@ class HubertEncoder: Module {
         x = layer_norm(x)
         x = dropout(x)
         
-        for layer in layers {
-            x = layer(x, mask: mask)
-        }
+        x = l0(x, mask: mask)
+        x = l1(x, mask: mask)
+        x = l2(x, mask: mask)
+        x = l3(x, mask: mask)
+        x = l4(x, mask: mask)
+        x = l5(x, mask: mask)
+        x = l6(x, mask: mask)
+        x = l7(x, mask: mask)
+        x = l8(x, mask: mask)
+        x = l9(x, mask: mask)
+        x = l10(x, mask: mask)
+        x = l11(x, mask: mask)
+        
         return x
     }
 }

@@ -58,3 +58,11 @@ test-audio/
 
 # Misc
 *.txt
+
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# Metal
+default.metallib
+

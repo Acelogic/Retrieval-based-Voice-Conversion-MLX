@@ -222,57 +222,73 @@ class Generator: Module {
     let noise_conv_1: Conv1d
     let noise_conv_2: Conv1d
     let noise_conv_3: Conv1d
-    
-    init(inputChannels: Int = 768, ginChannels: Int = 0) {
-        // Standard RVC V2 40k configuration from configs/40000.json
+
+    let totalUpsample: Int
+    let outputPaddings: [Int]
+
+    init(inputChannels: Int = 768, ginChannels: Int = 0, upsampleRates: [Int] = [10, 10, 2, 2], upsampleKernelSizes: [Int] = [16, 16, 4, 4], sampleRate: Int = 40000) {
+        self.totalUpsample = upsampleRates.reduce(1, *)
+        self.outputPaddings = upsampleRates.map { $0 % 2 }
+
         let upsampleInitialChannel = 512
-
         self.conv_pre = Conv1d(inputChannels, upsampleInitialChannel, kernelSize: 7, stride: 1, padding: 3)
-
-        // Speaker conditioning
         self.cond = ginChannels > 0 ? Conv1d(ginChannels, upsampleInitialChannel, kernelSize: 1, stride: 1, padding: 0) : nil
+        self.m_source = SourceModuleHnNSF(sample_rate: sampleRate, harmonic_num: 0)
 
-        // Initialize NSF Source Module
-        self.m_source = SourceModuleHnNSF(sample_rate: 40000, harmonic_num: 0)
+        // Calculate channel sizes (512 -> 256 -> 128 -> 64 -> 32)
+        let channels = (0..<4).map { upsampleInitialChannel / (1 << ($0 + 1)) }
 
-        // Upsample layers: channels halve at each step
-        // Layer 0: 512 -> 256, rate=10, kernel=16
-        // Layer 1: 256 -> 128, rate=10, kernel=16
-        // Layer 2: 128 -> 64, rate=2, kernel=4
-        // Layer 3: 64 -> 32, rate=2, kernel=4
-        // Note: MLXNN.ConvTransposed1d(inputChannels, outputChannels, kernelSize, stride, padding)
-        self.up_0 = MLXNN.ConvTransposed1d(inputChannels: 512, outputChannels: 256, kernelSize: 16, stride: 10, padding: 3)
-        self.up_1 = MLXNN.ConvTransposed1d(inputChannels: 256, outputChannels: 128, kernelSize: 16, stride: 10, padding: 3)
-        self.up_2 = MLXNN.ConvTransposed1d(inputChannels: 128, outputChannels: 64, kernelSize: 4, stride: 2, padding: 1)
-        self.up_3 = MLXNN.ConvTransposed1d(inputChannels: 64, outputChannels: 32, kernelSize: 4, stride: 2, padding: 1)
+        // Helper: calculate padding for ConvTransposed1d (matches Python generators.py:180-183)
+        func calcPadding(_ stride: Int, _ kernel: Int) -> Int {
+            return (stride % 2 == 0) ? (kernel - stride) / 2 : stride / 2 + stride % 2
+        }
 
-        // ResBlocks: 3 per upsample layer (one for each kernel size 3, 7, 11)
-        // Layer 0 resblocks (256 channels)
-        self.resblock_0 = ResBlock(channels: 256, kernelSize: 3, dilation: [1, 3, 5])
-        self.resblock_1 = ResBlock(channels: 256, kernelSize: 7, dilation: [1, 3, 5])
-        self.resblock_2 = ResBlock(channels: 256, kernelSize: 11, dilation: [1, 3, 5])
-        // Layer 1 resblocks (128 channels)
-        self.resblock_3 = ResBlock(channels: 128, kernelSize: 3, dilation: [1, 3, 5])
-        self.resblock_4 = ResBlock(channels: 128, kernelSize: 7, dilation: [1, 3, 5])
-        self.resblock_5 = ResBlock(channels: 128, kernelSize: 11, dilation: [1, 3, 5])
-        // Layer 2 resblocks (64 channels)
-        self.resblock_6 = ResBlock(channels: 64, kernelSize: 3, dilation: [1, 3, 5])
-        self.resblock_7 = ResBlock(channels: 64, kernelSize: 7, dilation: [1, 3, 5])
-        self.resblock_8 = ResBlock(channels: 64, kernelSize: 11, dilation: [1, 3, 5])
-        // Layer 3 resblocks (32 channels)
-        self.resblock_9 = ResBlock(channels: 32, kernelSize: 3, dilation: [1, 3, 5])
-        self.resblock_10 = ResBlock(channels: 32, kernelSize: 7, dilation: [1, 3, 5])
-        self.resblock_11 = ResBlock(channels: 32, kernelSize: 11, dilation: [1, 3, 5])
+        // Helper: calculate noise conv parameters (matches Python generators.py:196-200)
+        func calcNoiseParams(_ layerIdx: Int) -> (kernel: Int, stride: Int, padding: Int) {
+            let stride = (layerIdx + 1 < 4) ? upsampleRates[(layerIdx + 1)...].reduce(1, *) : 1
+            let kernel = stride == 1 ? 1 : stride * 2 - stride % 2
+            let padding = stride == 1 ? 0 : (kernel - stride) / 2
+            return (kernel, stride, padding)
+        }
 
-        // Noise convs: downsample har_source to match each upsample stage
-        // stride_f0s = [40, 4, 2, 1]
-        // kernel = stride * 2 - stride % 2 (or 1 if stride == 1)
-        self.noise_conv_0 = Conv1d(1, 256, kernelSize: 80, stride: 40, padding: 20)  // stride=40
-        self.noise_conv_1 = Conv1d(1, 128, kernelSize: 8, stride: 4, padding: 2)     // stride=4
-        self.noise_conv_2 = Conv1d(1, 64, kernelSize: 4, stride: 2, padding: 1)      // stride=2
-        self.noise_conv_3 = Conv1d(1, 32, kernelSize: 1, stride: 1, padding: 0)      // stride=1
+        // Create upsample layers with config-specific parameters
+        let pad0 = calcPadding(upsampleRates[0], upsampleKernelSizes[0])
+        self.up_0 = MLXNN.ConvTransposed1d(inputChannels: 512, outputChannels: channels[0], kernelSize: upsampleKernelSizes[0], stride: upsampleRates[0], padding: pad0)
 
-        self.conv_post = Conv1d(32, 1, kernelSize: 7, stride: 1, padding: 3)
+        let pad1 = calcPadding(upsampleRates[1], upsampleKernelSizes[1])
+        self.up_1 = MLXNN.ConvTransposed1d(inputChannels: channels[0], outputChannels: channels[1], kernelSize: upsampleKernelSizes[1], stride: upsampleRates[1], padding: pad1)
+
+        let pad2 = calcPadding(upsampleRates[2], upsampleKernelSizes[2])
+        self.up_2 = MLXNN.ConvTransposed1d(inputChannels: channels[1], outputChannels: channels[2], kernelSize: upsampleKernelSizes[2], stride: upsampleRates[2], padding: pad2)
+
+        let pad3 = calcPadding(upsampleRates[3], upsampleKernelSizes[3])
+        self.up_3 = MLXNN.ConvTransposed1d(inputChannels: channels[2], outputChannels: channels[3], kernelSize: upsampleKernelSizes[3], stride: upsampleRates[3], padding: pad3)
+
+        // Create resblocks (3 per layer: kernels 3, 7, 11)
+        self.resblock_0 = ResBlock(channels: channels[0], kernelSize: 3, dilation: [1, 3, 5])
+        self.resblock_1 = ResBlock(channels: channels[0], kernelSize: 7, dilation: [1, 3, 5])
+        self.resblock_2 = ResBlock(channels: channels[0], kernelSize: 11, dilation: [1, 3, 5])
+        self.resblock_3 = ResBlock(channels: channels[1], kernelSize: 3, dilation: [1, 3, 5])
+        self.resblock_4 = ResBlock(channels: channels[1], kernelSize: 7, dilation: [1, 3, 5])
+        self.resblock_5 = ResBlock(channels: channels[1], kernelSize: 11, dilation: [1, 3, 5])
+        self.resblock_6 = ResBlock(channels: channels[2], kernelSize: 3, dilation: [1, 3, 5])
+        self.resblock_7 = ResBlock(channels: channels[2], kernelSize: 7, dilation: [1, 3, 5])
+        self.resblock_8 = ResBlock(channels: channels[2], kernelSize: 11, dilation: [1, 3, 5])
+        self.resblock_9 = ResBlock(channels: channels[3], kernelSize: 3, dilation: [1, 3, 5])
+        self.resblock_10 = ResBlock(channels: channels[3], kernelSize: 7, dilation: [1, 3, 5])
+        self.resblock_11 = ResBlock(channels: channels[3], kernelSize: 11, dilation: [1, 3, 5])
+
+        // Create noise convs
+        let n0 = calcNoiseParams(0)
+        self.noise_conv_0 = Conv1d(1, channels[0], kernelSize: n0.kernel, stride: n0.stride, padding: n0.padding)
+        let n1 = calcNoiseParams(1)
+        self.noise_conv_1 = Conv1d(1, channels[1], kernelSize: n1.kernel, stride: n1.stride, padding: n1.padding)
+        let n2 = calcNoiseParams(2)
+        self.noise_conv_2 = Conv1d(1, channels[2], kernelSize: n2.kernel, stride: n2.stride, padding: n2.padding)
+        let n3 = calcNoiseParams(3)
+        self.noise_conv_3 = Conv1d(1, channels[3], kernelSize: n3.kernel, stride: n3.stride, padding: n3.padding)
+
+        self.conv_post = Conv1d(channels[3], 1, kernelSize: 7, stride: 1, padding: 3)
 
         super.init()
     }
@@ -294,9 +310,7 @@ class Generator: Module {
         }
 
         // NSF Source Signal: [B, L*U, 1] (High Resolution)
-        // upp = prod(upsampleRates) = 400
-        let upp = 400
-        let har_source = m_source(f0, upsampling_factor: upp)
+        let har_source = m_source(f0, upsampling_factor: totalUpsample)
         print("DEBUG: Generator.har_source: [\(har_source.min().item(Float.self))...\(har_source.max().item(Float.self))]")
         // har_source is now [B, AudioLen, 1]
 
@@ -315,7 +329,12 @@ class Generator: Module {
         for (i, up) in ups.enumerated() {
             out = leakyRelu(out, negativeSlope: LRELU_SLOPE)
             out = up(out)
-            
+
+            // Apply output_padding if needed (matches Python generators.py:240-244)
+            if outputPaddings[i] > 0 {
+                out = padded(out, widths: [[0,0], [0, outputPaddings[i]], [0,0]])
+            }
+
             // MEMORY FIX: Force evaluation after each upsample to prevent graph accumulation
             MLX.eval(out)
 

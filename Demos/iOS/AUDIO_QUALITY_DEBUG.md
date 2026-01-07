@@ -1,6 +1,6 @@
 # iOS RVC Audio Quality Debugging
 
-## Status: STABLE (Functional but Noisy)
+## Status: STABLE & CRASH-FREE
 
 We have successfully achieved voice conversion on iOS! The audio contains the correct pitch and phonemes, confirming the model architecture is functional.
 
@@ -24,9 +24,20 @@ We have successfully achieved voice conversion on iOS! The audio contains the co
 **Fix:** Implemented custom `PyTorchGRU` class in `RMVPE.swift` that matches PyTorch's `bias_ih` and `bias_hh` application exactly.
 
 ### 3. Weight Format (SOLVED)
-**Fix:** Updated `tools/convert_rmvpe_weights.py` to:
-- Convert snake_case `forward_grus` to camelCase `forwardGRUs`.
-- Keep PyTorch specific weight names (`weight_ih`, etc.).
+**Fix:** Updated `tools/convert_models_for_ios.py` to:
+- Convert snake_case `layers.X` to camelCase `lX` for properties.
+- Map `ResEncoderBlock` and `ResDecoderBlock` conv layers to `bX` properties.
+- Corrected global `ConvTranspose2d` weight transposition to `(1, 2, 3, 0)`.
+
+### 4. BatchNorm Dimension Bug (SOLVED)
+**Issue:** `MLXNN/Normalization.swift:330: Precondition failed`.
+**Root Cause:** Redundant `expandedDimensions(axis: -1)` created 5D tensors. `BatchNorm` only supports up to 4D.
+**Fix:** Removed redundant expansion in `RMVPE.callAsFunction`.
+
+### 5. Input/Output Alignment (SOLVED)
+**Fixes:**
+- **Reflect Padding:** Added padding to multiple of 32 in `RMVPE.infer` for architecture compatibility.
+- **F0 Trimming:** Trimmed RMVPE output to exactly 2x Hubert length to fix synthesizer broadcast errors.
 
 ---
 

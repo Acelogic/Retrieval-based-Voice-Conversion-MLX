@@ -1,0 +1,47 @@
+# Audio Parity Achievement Plan (Final Rev)
+
+The objective is to fix the Swift [SineGenerator](file:///Users/mcruz/Developer/Retrieval-based-Voice-Conversion-MLX/rvc_mlx/lib/mlx/generators.py#9-117) and overhaul the benchmark suite to provide a **standardized, reproducible environment**.
+
+## Sources of Truth
+
+- **Original Input Audio**: `/Users/mcruz/Developer/Retrieval-based-Voice-Conversion-MLX/test-audio` (Sole source of truth)
+- **Implementation Hierarchy**:
+    1. **Primary Reference**: `rvc_mlx` (Python MLX implementation)
+    2. **Ultimate Reference**: `rvc` (Original PyTorch implementation - consult if `rvc_mlx` is ambiguous)
+- **PyTorch Model Weights**: `/Users/mcruz/Library/Application Support/Replay/com.replay.Replay/models`
+
+## Proposed Changes
+
+### 1. Swift DSP FIX (RVCNativePackage)
+
+#### [MODIFY] [RVCModel.swift](file:///Users/mcruz/Developer/Retrieval-based-Voice-Conversion-MLX/Demos/iOS/RVCNative/RVCNativePackage/Sources/RVCNativeFeature/RVC/RVCModel.swift)
+- **SineGenerator Fix**: 
+    - Re-implement `_generate_sine_wave` to strictly match the Python `fmod(x + 0.5, 1.0) - 0.5` and `cumsum` pattern.
+    - **Random Phase**: 
+        - fundamental frequency (harmonic index 0) **MUST be zero**.
+        - Harmonics will use uniform random noise `[0, 1)`.
+
+### 2. Benchmark Suite: The "Total Rebuild" Pipeline
+
+#### [MODIFY] [run_comparative_benchmark.sh](file:///Users/mcruz/Developer/Retrieval-based-Voice-Conversion-MLX/run_comparative_benchmark.sh)
+- **Standardized Cleanup**:
+    - Purge `test_results/`.
+    - Purge generated weights in `weights/` (`.safetensors`, `.npz`).
+    - **CRITICAL**: Purge all files in the iOS Assets directory:
+      `/Users/mcruz/Developer/Retrieval-based-Voice-Conversion-MLX/Demos/iOS/RVCNative/RVCNativePackage/Sources/RVCNativeFeature/Assets`
+- **Weight Reconstruction (From Scratch)**:
+    - **Core Models**: Re-download/sync `rmvpe.pt` and `hubert_base.pt` if missing from stock folders.
+    - **Conversion**:
+        - Use `python3 tools/convert_rvc_model.py` and `python3 tools/convert_models_for_ios.py` to regenerate ALL weights from the PyTorch sources in the Replay directory.
+        - Ensure `slim_shady` and `coder999` are prioritized.
+- **Verification Routing**:
+    - All inference benchmarks (Swift & Python) will pull audio exclusively from `test-audio/`.
+
+## Verification Plan
+
+### Metrics
+- **Spectral Correlation**: Target **> 0.73** for `slim_shady` (48kHz).
+- **Waveform Correlation**: Expect improvement from ~0.0 to **> 0.5** via phase alignment.
+
+### Execution
+- Run `./run_comparative_benchmark.sh` and capture output to `benchmark_v13.log`.

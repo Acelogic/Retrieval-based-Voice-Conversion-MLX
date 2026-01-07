@@ -413,7 +413,10 @@ public class Synthesizer: Module {
         embeddingDim: Int = 768,
         speakerEmbedDim: Int = 256,
         ginChannels: Int = 256,
-        useF0: Bool = true
+        useF0: Bool = true,
+        upsampleRates: [Int] = [10, 10, 2, 2],
+        upsampleKernelSizes: [Int] = [16, 16, 4, 4],
+        sampleRate: Int = 40000
     ) {
         self.useF0 = useF0
 
@@ -429,9 +432,9 @@ public class Synthesizer: Module {
             embeddingDim: embeddingDim,
             f0: useF0
         )
-        
-        // Generator: expects 192-dim input (now matches!)
-        self.dec = Generator(inputChannels: interChannels, ginChannels: ginChannels)
+
+        // Generator: now supports dynamic configuration
+        self.dec = Generator(inputChannels: interChannels, ginChannels: ginChannels, upsampleRates: upsampleRates, upsampleKernelSizes: upsampleKernelSizes, sampleRate: sampleRate)
         
         // Flow: reverse flow for voice conversion
         self.flow = ResidualCouplingBlock(
