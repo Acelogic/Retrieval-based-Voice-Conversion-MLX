@@ -9,24 +9,42 @@ final class AudioProcessor: @unchecked Sendable {
     
     // Load audio file to MLXArray (1D float32)
     func loadAudio(url: URL, targetSampleRate: Double = 16000) throws -> (MLXArray, Double) {
+        print("[AudioProcessor] Loading: \(url.path)")
         let file = try AVAudioFile(forReading: url)
+        print("[AudioProcessor] Format: \(file.fileFormat)")
+        print("[AudioProcessor] Length: \(file.length)")
         
-        guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: file.fileFormat.sampleRate, channels: 1, interleaved: false) else {
-            throw NSError(domain: "AudioProcessor", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid format"])
-        }
+        // Read in the file's native processing format (handling stereo/mono)
+        let format = file.processingFormat
+        let frameLength = AVAudioFrameCount(file.length)
         
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(file.length)) else {
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameLength) else {
             throw NSError(domain: "AudioProcessor", code: 2, userInfo: [NSLocalizedDescriptionKey: "Buffer allocation failed"])
         }
         
         try file.read(into: buffer)
         
-        guard let floatData = buffer.floatChannelData?[0] else {
-            throw NSError(domain: "AudioProcessor", code: 3, userInfo: [NSLocalizedDescriptionKey: "No float data"])
-        }
+        // Convert to Float array (Mono)
+        let frames = Int(buffer.frameLength)
+        var audioSamples = [Float](repeating: 0.0, count: frames)
         
-        let frameLength = Int(buffer.frameLength)
-        var audioSamples = Array(UnsafeBufferPointer(start: floatData, count: frameLength))
+        if let floatChannelData = buffer.floatChannelData {
+            let channels = Int(format.channelCount)
+            for c in 0..<channels {
+                let data = UnsafeBufferPointer(start: floatChannelData[c], count: frames)
+                for i in 0..<frames {
+                    audioSamples[i] += data[i]
+                }
+            }
+            
+            // Average if multiple channels
+            if channels > 1 {
+                let scale = 1.0 / Float(channels)
+                for i in 0..<frames {
+                    audioSamples[i] *= scale
+                }
+            }
+        }
         
         // Resample if necessary
         if file.fileFormat.sampleRate != targetSampleRate {
@@ -119,10 +137,10 @@ final class AudioProcessor: @unchecked Sendable {
     /// Calculate RMS using Conv1d to match Librosa/Python implementation
     private func calculateRMS(audio: MLXArray, sampleRate: Int) -> MLXArray {
         // Python pipeline logic:
-        // frame_length = source_rate // 2 * 2
-        // hop_length = source_rate // 2
-        let frameLength = (sampleRate / 2) * 2
-        let hopLength = sampleRate / 2
+        // Use standard window sizes (e.g. 50ms window, 12.5ms hop)
+        // Previous logic using sampleRate/2 was too large (0.5s)
+        let frameLength = Int(Double(sampleRate) * 0.05) // 50ms
+        let hopLength = Int(Double(sampleRate) * 0.0125) // 12.5ms
         
         // 1. Square signal
         let squared = MLX.square(audio) // [T]
@@ -227,5 +245,142 @@ final class AudioProcessor: @unchecked Sendable {
         let factor = p1 * p2
         
         return targetAudio * factor
+    }
+    
+    // MARK: - Audio Preprocessing
+    
+    /// Apply 5th order Butterworth high-pass filter to remove DC offset and low-frequency noise
+    /// Matches Python's scipy.signal.butter(5, 48, btype="high", fs=16000) + filtfilt
+    public func highPassFilter(audio: MLXArray, sampleRate: Int = 16000, cutoff: Double = 48.0) -> MLXArray {
+        // Convert MLXArray to Float array for vDSP processing
+        let audioData = audio.asArray(Float.self)
+        let count = audioData.count
+        
+        // For 5th order, we use 3 cascaded sections (1st + 2nd + 2nd order)
+        // Using exact scipy.signal.butter(5, 48, btype="high", fs=16000, output='sos') coefficients
+        
+        // Section 0 (first order)
+        let b0_0: Double = 0.9699606451838447
+        let b1_0: Double = -0.9699606451838447
+        let a1_0: Double = -0.9813258904926881
+        
+        // Section 1 (biquad)
+        let b0_1: Double = 1.0
+        let b1_1: Double = -2.0
+        let b2_1: Double = 1.0
+        let a1_1: Double = -1.9696106864374547
+        let a2_1: Double = 0.9699606452559844
+        
+        // Section 2 (biquad)
+        let b0_2: Double = 1.0
+        let b1_2: Double = -2.0
+        let b2_2: Double = 1.0
+        let a1_2: Double = -1.9880652422382208
+        let a2_2: Double = 0.9884184800471566
+        
+        var output = audioData
+        
+        // Apply cascaded sections (forward pass)
+        output = applyFirstOrder(output, b0: b0_0, b1: b1_0, a1: a1_0)
+        output = applyBiquad(output, b0: b0_1, b1: b1_1, b2: b2_1, a1: a1_1, a2: a2_1)
+        output = applyBiquad(output, b0: b0_2, b1: b1_2, b2: b2_2, a1: a1_2, a2: a2_2)
+        
+        // Reverse pass (filtfilt for zero-phase)
+        output.reverse()
+        output = applyFirstOrder(output, b0: b0_0, b1: b1_0, a1: a1_0)
+        output = applyBiquad(output, b0: b0_1, b1: b1_1, b2: b2_1, a1: a1_1, a2: a2_1)
+        output = applyBiquad(output, b0: b0_2, b1: b1_2, b2: b2_2, a1: a1_2, a2: a2_2)
+        output.reverse()
+        
+        return MLXArray(output)
+    }
+    
+    /// Apply biquad IIR filter section
+    private func applyBiquad(_ input: [Float], b0: Double, b1: Double, b2: Double, a1: Double, a2: Double) -> [Float] {
+        var output = [Float](repeating: 0, count: input.count)
+        var w1: Double = 0.0
+        var w2: Double = 0.0
+        
+        // Direct Form II implementation
+        for i in 0..<input.count {
+            let w0 = Double(input[i]) - a1 * w1 - a2 * w2
+            output[i] = Float(b0 * w0 + b1 * w1 + b2 * w2)
+            w2 = w1
+            w1 = w0
+        }
+        
+        return output
+    }
+    
+    /// Apply first-order IIR filter section
+    private func applyFirstOrder(_ input: [Float], b0: Double, b1: Double, a1: Double) -> [Float] {
+        var output = [Float](repeating: 0, count: input.count)
+        var w1: Double = 0.0
+        
+        for i in 0..<input.count {
+            let w0 = Double(input[i]) - a1 * w1
+            output[i] = Float(b0 * w0 + b1 * w1)
+            w1 = w0
+        }
+        
+        return output
+    }
+    
+    /// Normalize audio to prevent clipping (matches Python's max/0.99 normalization)
+    public func normalizeAudio(_ audio: MLXArray, maxScale: Float = 0.99) -> MLXArray {
+        let audioMax = MLX.max(MLX.abs(audio)).item(Float.self) / maxScale
+        if audioMax > 1.0 {
+            return audio / audioMax
+        }
+        return audio
+    }
+    
+    // MARK: - Audio Analysis
+    
+    public struct AudioStats: CustomStringConvertible {
+        public let rms: Float
+        public let peak: Float
+        public let minVal: Float
+        public let maxVal: Float
+        public let zeroCrossingRate: Float
+        public let duration: Float
+        
+        public var description: String {
+            return String(format: "RMS: %.4f | Peak: %.4f | Range: [%.4f, %.4f] | ZCR: %.4f | Dur: %.2fs", rms, peak, minVal, maxVal, zeroCrossingRate, duration)
+        }
+    }
+    
+    public func analyzeAudio(_ audio: MLXArray, sampleRate: Int) -> AudioStats {
+        // Compute stats synchronously (eval needed)
+        
+        // 1. Min/Max/Peak
+        let minVal = audio.min().item(Float.self)
+        let maxVal = audio.max().item(Float.self)
+        let peak = max(abs(minVal), abs(maxVal))
+        
+        // 2. RMS
+        let squared = MLX.square(audio)
+        let meanSquared = squared.mean().item(Float.self)
+        let rms = sqrt(meanSquared)
+        
+        // 3. Zero Crossing Rate
+        // Count sign changes
+        let sign = MLX.sign(audio)
+        let diff = sign[1...] - sign[0..<(audio.shape[0]-1)]
+        let nonZeroDiffs = MLX.abs(diff) .> 0
+        let zeroCrossings = nonZeroDiffs.sum().item(Int.self)
+        let zcr = Float(zeroCrossings) / Float(audio.shape[0])
+        
+        // 4. Duration
+        let duration = Float(audio.shape[0]) / Float(sampleRate)
+        
+        return AudioStats(
+            rms: rms,
+            peak: peak,
+            minVal: minVal,
+            maxVal: maxVal,
+            zeroCrossingRate: zcr,
+            duration: duration
+        )
     }
 }

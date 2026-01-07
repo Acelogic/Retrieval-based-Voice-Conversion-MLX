@@ -132,6 +132,11 @@ class PipelineMLX:
         f0_mel[f0_mel > 255] = 255
         f0_coarse = np.rint(f0_mel).astype(int)
         
+        print(f"DEBUG DATA DUMP (Python):")
+        f0_print = [f"{x:.4f}" for x in f0bak[:20]]
+        print(f"F0 (First 20): [{', '.join(f0_print)}]")
+        print(f"Pitch (First 20): {f0_coarse[:20].tolist()}")
+        
         return f0_coarse, f0bak
 
     def voice_conversion(self, model, net_g, sid, audio0, pitch, pitchf, index, big_npy, index_rate, version, protect):
@@ -144,6 +149,9 @@ class PipelineMLX:
         feats = self.hubert_model(audio_mx) 
         # feats is MLX array. Convert to CPU/Numpy for Faiss
         feats_np = np.array(feats) # (1, L, C)
+        
+        phone_print = [f"{x:.4f}" for x in feats_np[0, :20, 0]]
+        print(f"Phone[0] (First 20): [{', '.join(phone_print)}]")
         
         # Store raw features BEFORE index retrieval for protection logic
         feats0_np = feats_np.copy()

@@ -197,6 +197,9 @@ struct ContentView: View {
     @State private var pitchShift: Double = 0.0 // -12 to +12 semitones
     @State private var featureRatio: Double = 0.75 // 0.0 to 1.0
     @State private var showAdvancedSettings: Bool = false
+    @State private var recordingTime: TimeInterval = 0.0
+    @State private var recordingTimer: Timer?
+    @State private var justFinishedRecording: Bool = false
     
     // Quick Demo File
     let stockAudioURL = RVCInference.bundle.url(forResource: "coder_audio_stock", withExtension: "wav") ?? RVCInference.bundle.url(forResource: "demo", withExtension: "wav")
@@ -814,22 +817,112 @@ struct ContentView: View {
                 }
             }
             
-            // Audio Recording
+            // Audio Recording - Dynamic UI
             if audioRecorder.isRecording {
-                Button(action: { audioRecorder.stopRecording() }) {
-                    HStack {
-                        Image(systemName: "stop.circle.fill")
-                        Text("Stop Recording")
+                // While Recording - Animated
+                VStack(spacing: 16) {
+                    // Pulsing Red Circle with Timer
+                    ZStack {
+                        // Outer pulse rings
+                        Circle()
+                            .fill(Color.red.opacity(0.2))
+                            .frame(width: 120, height: 120)
+                            .scaleEffect(phase)
+                            .opacity(2 - phase)
+                        
+                        Circle()
+                            .fill(Color.red.opacity(0.3))
+                            .frame(width: 90, height: 90)
+                            .scaleEffect(1 + (phase * 0.5))
+                        
+                        // Inner solid circle
+                        Circle()
+                            .fill(Color.red)
+                            .frame(width: 70, height: 70)
+                        
+                        Image(systemName: "waveform")
+                            .font(.system(size: 28))
+                            .foregroundStyle(.white)
                     }
-                    .font(.headline)
-                    .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(Color.red.opacity(0.5))
-                    .glassEffect(in: Capsule())
-                    .foregroundColor(.primary)
+                    .onAppear {
+                        withAnimation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true)) {
+                            phase = 1.5
+                        }
+                    }
+                    
+                    // Recording Time
+                    Text(formatTime(recordingTime))
+                        .font(.system(size: 40, weight: .thin, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(.primary)
+                    
+                    Text("Recording...")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .opacity(phase > 1.2 ? 1.0 : 0.5)
+                    
+                    // Stop Button
+                    Button(action: {
+                        audioRecorder.stopRecording()
+                        recordingTimer?.invalidate()
+                        justFinishedRecording = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                            justFinishedRecording = false
+                        }
+                    }) {
+                        HStack {
+                            Image(systemName: "stop.circle.fill")
+                            Text("Stop Recording")
+                        }
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(Color.red.opacity(0.5))
+                        .glassEffect(in: Capsule())
+                        .foregroundColor(.primary)
+                    }
                 }
+                .padding()
+                .onAppear {
+                    recordingTime = 0
+                    recordingTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
+                        recordingTime += 0.1
+                    }
+                }
+                .transition(.opacity.combined(with: .scale))
+            } else if justFinishedRecording {
+                // Just Finished Recording - Success Animation
+                VStack(spacing: 16) {
+                    ZStack {
+                        Circle()
+                            .fill(Color.green.opacity(0.2))
+                            .frame(width: 100, height: 100)
+                        
+                        Circle()
+                            .fill(Color.green)
+                            .frame(width: 70, height: 70)
+                        
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 32, weight: .bold))
+                            .foregroundStyle(.white)
+                    }
+                    .transition(.scale.combined(with: .opacity))
+                    
+                    Text("Recording Complete!")
+                        .font(.headline)
+                        .foregroundStyle(.primary)
+                    
+                    Text(formatTime(recordingTime))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding()
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
             } else {
-                Button(action: { audioRecorder.startRecording() }) {
+                // Not Recording - Record Button
+                Button(action: {
+                    audioRecorder.startRecording()
+                }) {
                     HStack {
                         Image(systemName: "mic.circle.fill")
                         Text("Record Audio")
@@ -1123,6 +1216,16 @@ struct ContentView: View {
                 originalWaveform = AudioWaveformExtractor.extractSamples(from: stock)
             }
         }
+    }
+
+
+    // MARK: - Helper Functions
+    
+    private func formatTime(_ time: TimeInterval) -> String {
+        let minutes = Int(time) / 60
+        let seconds = Int(time) % 60
+        let centiseconds = Int((time.truncatingRemainder(dividingBy: 1)) * 10)
+        return String(format: "%02d:%02d.%d", minutes, seconds, centiseconds)
     }
 
     func handleFileImport(result: Result<[URL], Error>) {

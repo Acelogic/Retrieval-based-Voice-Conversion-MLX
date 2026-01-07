@@ -15,21 +15,13 @@ import MLXNN
         var hubertModel: HubertModel?
         var synthesizer: Synthesizer?
         var rmvpe: RMVPE?
+        var modelSampleRate: Int = 40000  // Detected from model config
         
         private func log(_ message: String) {
             print(message) // Keep console output
             DispatchQueue.main.async {
                 self.onLog?(message)
             }
-        }
-        
-        public func unloadModels() {
-            log("RVCInference: Unloading models to release file handles.")
-            self.hubertModel = nil
-            self.synthesizer = nil
-            self.rmvpe = nil
-            self.status = "Idle"
-            MLX.Memory.clearCache()
         }
         
         public init() {
@@ -50,8 +42,28 @@ import MLXNN
             self.hubertModel = HubertModel(config: HubertConfig())
             var newParams: [String: MLXArray] = [:]
             for (k, v) in hubertWeights {
-                newParams[k] = v
+                var newKey = k
+                
+                // Remap encoder.layers.X to encoder.lX (Swift model uses l0, l1, etc.)
+                if newKey.hasPrefix("encoder.layers.") {
+                    let parts = newKey.components(separatedBy: ".")
+                    if parts.count >= 3, let idx = Int(parts[2]) {
+                        newKey = "encoder.l\(idx)." + parts.dropFirst(3).joined(separator: ".")
+                    }
+                }
+                
+                // Remap feature_extractor.conv_layers.X to feature_extractor.lX
+                if newKey.hasPrefix("feature_extractor.conv_layers.") {
+                    let parts = newKey.components(separatedBy: ".")
+                    if parts.count >= 3, let idx = Int(parts[2]) {
+                        newKey = "feature_extractor.l\(idx)." + parts.dropFirst(3).joined(separator: ".")
+                    }
+                }
+                
+                newParams[newKey] = v
             }
+            log("RVCInference: Loaded \(newParams.count) HuBERT weights")
+            log("RVCInference: HuBERT sample keys: \(Array(newParams.keys.prefix(5)))")
             self.hubertModel?.update(parameters: ModuleParameters.unflattened(newParams))
             
             // 2. Load Synthesizer (TextEncoder + Flow + Generator)
@@ -65,8 +77,33 @@ import MLXNN
             // DEBUG: Print all dec.* keys to understand weight naming
             let decKeys = modelWeights.keys.filter { $0.hasPrefix("dec.") }.sorted()
             log("RVCInference: Generator weight keys: \(decKeys.prefix(20))...")  // Show first 20
-            
-            // Initialize Synthesizer (V2 defaults)
+
+            // Read model config for architecture parameters
+            var detectedSR = self.modelSampleRate
+            var detectedUpsRates = [10, 10, 2, 2]
+            var detectedKernelSizes = [16, 16, 4, 4]
+
+            let configURL = modelURL.deletingPathExtension().appendingPathExtension("json")
+            if FileManager.default.fileExists(atPath: configURL.path) {
+                log("RVCInference: Found config at \(configURL.lastPathComponent)")
+                if let data = try? Data(contentsOf: configURL),
+                   let json = try? JSONSerialization.jsonObject(with: data) as? [Any] {
+                    if json.count > 17, let sr = json[17] as? Int {
+                        detectedSR = sr
+                        log("RVCInference: Detected Sample Rate \(detectedSR)Hz")
+                    }
+                    if json.count > 12, let u = json[12] as? [Int] {
+                        detectedUpsRates = u
+                        log("RVCInference: Detected Upsample Rates \(detectedUpsRates)")
+                    }
+                    if json.count > 14, let k = json[14] as? [Int] {
+                        detectedKernelSizes = k
+                        log("RVCInference: Detected Kernel Sizes \(detectedKernelSizes)")
+                    }
+                }
+            }
+
+            // Initialize Synthesizer with architecture from config
             self.synthesizer = Synthesizer(
                 interChannels: 192,
                 hiddenChannels: 192,
@@ -75,11 +112,17 @@ import MLXNN
                 nLayers: 6,
                 kernelSize: 3,
                 pDropout: 0.0,
-                embeddingDim: 768,  // Model weights expect 768-dim HuBERT features
+                embeddingDim: 768,
                 speakerEmbedDim: 256,
                 ginChannels: 256,
-                useF0: true
+                useF0: true,
+                upsampleRates: detectedUpsRates,
+                upsampleKernelSizes: detectedKernelSizes,
+                sampleRate: detectedSR
             )
+            
+            // Store sample rate for use during inference
+            self.modelSampleRate = detectedSR
             
             // Remap keys for Synthesizer
             // RVC V2 PyTorch Weights:
@@ -156,9 +199,69 @@ import MLXNN
                 synthParams[newK] = newV
             }
 
+            log("RVCInference: About to load \(synthParams.count) parameters into Synthesizer")
+            
+            // 5. CRITICAL: Fuse weight normalization for ConvTransposed1d layers
+            // PyTorch weight normalization: weight = g * (v / ||v||)
+            // where g is weight_g and v is weight_v
+            for i in 0..<4 {
+                let gKey = "dec.up_\(i).weight_g"
+                let vKey = "dec.up_\(i).weight_v"
+                let outKey = "dec.up_\(i).weight"
+                
+                if let weight_g = synthParams[gKey], let weight_v = synthParams[vKey] {
+                    // Compute L2 norm of weight_v along output channel axis (axis 0)
+                    // weight_v shape: (out_channels, kernel_size, in_channels) in MLX format
+                    let v_sqr = weight_v * weight_v
+                    let v_sum = v_sqr.sum(axes: [1, 2], keepDims: true)  // Sum over kernel and in_channels
+                    let v_norm = sqrt(v_sum + 1e-12)  // Add epsilon for numerical stability
+                    
+                    // Normalize and scale
+                    let weight_normalized = weight_v / v_norm
+                    let weight_fused = weight_g * weight_normalized
+                    
+                    synthParams[outKey] = weight_fused
+                    log("RVCInference: Fused weight_g \(weight_g.shape) + weight_v \(weight_v.shape) -> \(outKey) \(weight_fused.shape)")
+                    
+                    // Remove the separate g/v keys
+                    synthParams.removeValue(forKey: gKey)
+                    synthParams.removeValue(forKey: vKey)
+                }
+            }
+            
+            // Also fuse weight normalization for resblock convolutions if present
+            for i in 0..<12 {
+                for (convPrefix, convCount) in [("c1_", 3), ("c2_", 3)] {
+                    for j in 0..<convCount {
+                        let base = "dec.resblock_\(i).\(convPrefix)\(j)"
+                        let gKey = "\(base).weight_g"
+                        let vKey = "\(base).weight_v"
+                        let outKey = "\(base).conv.weight"
+                        
+                        if let weight_g = synthParams[gKey], let weight_v = synthParams[vKey] {
+                            // For Conv1d: weight_v shape (out_channels, kernel, in_channels)
+                            let v_sqr = weight_v * weight_v
+                            let v_sum = v_sqr.sum(axes: [1, 2], keepDims: true)
+                            let v_norm = sqrt(v_sum + 1e-12)
+                            
+                            let weight_normalized = weight_v / v_norm
+                            let weight_fused = weight_g * weight_normalized
+                            
+                            synthParams[outKey] = weight_fused
+                            // Remove the separate g/v keys
+                            synthParams.removeValue(forKey: gKey)
+                            synthParams.removeValue(forKey: vKey)
+                        }
+                    }
+                }
+            }
+            
+            log("RVCInference: After weight fusion: \(synthParams.count) parameters")
+            log("RVCInference: Generator up_0 weight shape in file: \(synthParams["dec.up_0.weight"]?.shape ?? [])")
+
             self.synthesizer?.update(parameters: ModuleParameters.unflattened(synthParams))
             self.synthesizer?.train(false)  // CRITICAL: Set to eval mode (disables Dropout, uses BatchNorm running stats)
-            log("RVCInference: Loaded Synthesizer with \(synthParams.count) weight keys")
+            log("RVCInference: Successfully loaded Synthesizer with \(synthParams.count) weight keys")
             
             // 3. Load RMVPE (Optional)
             if let rmvpeURL = rmvpeURL {
@@ -167,9 +270,53 @@ import MLXNN
                     let rmvpeWeights = try MLX.loadArrays(url: rmvpeURL)
                     self.rmvpe = RMVPE()
                     
-                    self.rmvpe?.update(parameters: ModuleParameters.unflattened(rmvpeWeights))
+                    // Remap RMVPE weight keys (Python MLX format -> Swift)
+                    var remappedRMVPE: [String: MLXArray] = [:]
+                    for (k, v) in rmvpeWeights {
+                        var newKey = k
+                        
+                        // Skip batch tracking stats
+                        if newKey.contains("num_batches_tracked") {
+                            continue
+                        }
+                        
+                        // Remap fc.bigru.forward_grus.0 -> bigru.fwd0
+                        if newKey.hasPrefix("fc.bigru.forward_grus.0.") {
+                            newKey = "bigru.fwd0." + String(newKey.dropFirst("fc.bigru.forward_grus.0.".count))
+                        }
+                        
+                        // Remap fc.bigru.backward_grus.0 -> bigru.bwd0
+                        if newKey.hasPrefix("fc.bigru.backward_grus.0.") {
+                            newKey = "bigru.bwd0." + String(newKey.dropFirst("fc.bigru.backward_grus.0.".count))
+                        }
+                        
+                        // Remap fc.linear -> linear
+                        if newKey.hasPrefix("fc.linear.") {
+                            newKey = "linear." + String(newKey.dropFirst("fc.linear.".count))
+                        }
+                        
+                        // Remap blocks.X -> bX (for ResEncoder/Decoder blocks)
+                        newKey = newKey.replacingOccurrences(of: ".blocks.0.", with: ".b0.")
+                        newKey = newKey.replacingOccurrences(of: ".blocks.1.", with: ".b1.")
+                        newKey = newKey.replacingOccurrences(of: ".blocks.2.", with: ".b2.")
+                        newKey = newKey.replacingOccurrences(of: ".blocks.3.", with: ".b3.")
+                        
+                        // Remap unet.encoder.layers.X -> unet.encoder.lX
+                        if newKey.contains(".layers.") {
+                            newKey = newKey.replacingOccurrences(of: ".layers.0.", with: ".l0.")
+                            newKey = newKey.replacingOccurrences(of: ".layers.1.", with: ".l1.")
+                            newKey = newKey.replacingOccurrences(of: ".layers.2.", with: ".l2.")
+                            newKey = newKey.replacingOccurrences(of: ".layers.3.", with: ".l3.")
+                            newKey = newKey.replacingOccurrences(of: ".layers.4.", with: ".l4.")
+                        }
+                        
+                        remappedRMVPE[newKey] = v
+                    }
+                    
+                    log("RVCInference: RMVPE sample keys after remapping: \(Array(remappedRMVPE.keys.prefix(5)))")
+                    self.rmvpe?.update(parameters: ModuleParameters.unflattened(remappedRMVPE))
                     self.rmvpe?.train(false)  // CRITICAL: Set to eval mode for correct inference
-                    log("RVCInference: Loaded RMVPE weights: \(rmvpeWeights.count) keys")
+                    log("RVCInference: Loaded RMVPE weights: \(remappedRMVPE.count) keys")
                 } catch {
                     log("RVCInference: Failed to load RMVPE: \(error). Using fallback F0.")
                     self.rmvpe = nil
@@ -184,7 +331,7 @@ import MLXNN
             DispatchQueue.main.async { self.status = "Models Loaded" }
         }
         
-        public func infer(audioURL: URL, outputURL: URL, volumeEnvelope: Float = 1.0) async {
+        public func infer(audioURL: URL, outputURL: URL) async {
             do {
                 DispatchQueue.main.async { self.status = "Loading Audio..." }
                 
@@ -215,8 +362,8 @@ import MLXNN
                 MLX.eval(outputPadded)
                 
                 // Calculate crop to remove padding from output
-                // Input is at 16kHz, output is at 40kHz (2.5x ratio)
-                let outputRatio: Float = 40000.0 / 16000.0
+                // Input is at 16kHz, output is at model sample rate
+                let outputRatio: Float = Float(self.modelSampleRate) / 16000.0
                 let cropSamples = Int(Float(padSamples) * outputRatio)
                 
                 let outputLen = outputPadded.shape[1]
@@ -233,21 +380,7 @@ import MLXNN
                 
                 MLX.eval(finalOutput)
                 
-                let outputSampleRate: Double = 40000.0 // Standard RVC V2 output
-                
-                // Volume Envelope Mixing
-                if volumeEnvelope != 1.0 {
-                    log("RVCInference: Applying Volume Envelope (rate: \(volumeEnvelope))")
-                    // sourceRate is 16000 (from loadAudio default)
-                    // targetRate is 40000
-                    finalOutput = AudioProcessor.shared.changeRMS(
-                        sourceAudio: audioToProcess,
-                        sourceRate: 16000,
-                        targetAudio: finalOutput,
-                        targetRate: Int(outputSampleRate),
-                        rate: volumeEnvelope
-                    )
-                }
+                let outputSampleRate: Double = Double(self.modelSampleRate)
                 
                 log("RVCInference: Saving \(finalOutput.size) samples to \(outputURL.path)")
                 try AudioProcessor.shared.saveAudio(array: finalOutput, url: outputURL, sampleRate: outputSampleRate)
@@ -263,6 +396,15 @@ import MLXNN
         
         private func inferChunk(chunk: MLXArray) async throws -> MLXArray {
             // chunk: [T] - 16kHz
+            
+            // DEBUG: Log audio input stats
+            log("DEBUG: Audio input - shape: \(chunk.shape), min: \(chunk.min().item(Float.self)), max: \(chunk.max().item(Float.self)), mean: \(chunk.mean().item(Float.self))")
+            
+            // Log first 10 audio samples
+            let audioSlice = chunk[0..<min(10, chunk.shape[0])].asType(Float.self)
+            MLX.eval(audioSlice)
+            let audioSamples = audioSlice.asArray(Float.self)
+            log("DEBUG: Audio first 10 samples: \(audioSamples)")
              
             // 1. Hubert Feature Extraction (16kHz -> 50fps)
             let audioInput = chunk.expandedDimensions(axis: 0) // [1, T]
@@ -273,6 +415,13 @@ import MLXNN
             MLX.eval(hubertFeatures)
             MLX.Memory.clearCache()  // MEMORY FIX: Clear after HuBERT
             log("DEBUG: HuBERT output shape: \(hubertFeatures.shape)")
+            
+            // DEBUG: Log first HuBERT frame's first 5 features
+            let hubertSlice = hubertFeatures[0, 0, 0..<5].asType(Float.self)
+            MLX.eval(hubertSlice)
+            let hubertSamples = hubertSlice.asArray(Float.self)
+            log("DEBUG: HuBERT[0,0,:5]: \(hubertSamples)")
+
 
             // 2. F0 Estimation (16kHz -> 100fps)
             var f0: MLXArray
@@ -326,31 +475,26 @@ import MLXNN
             if true { // Always log for debug
                 log("DEBUG DATA DUMP:")
                 
-                // 1. F0 (Raw Hz)
-                // 1. F0 (Raw Hz)
-                // Fix: Index [0] for batch to get rank-1 array [T]
-                let f0Data = nsff0.asType(Float.self)[0, 0..<min(20, p_len_val), 0]
-                var f0Str = "F0 (First 20): ["
-                for i in 0..<f0Data.shape[0] {
-                     f0Str += String(format: "%.4f, ", f0Data[i].item(Float.self))
-                }
-                log(f0Str + "]")
+                // 1. F0 (Raw Hz) - use asArray to avoid .item() precondition failure
+                let f0Slice = nsff0[0, 0..<min(20, p_len_val), 0].asType(Float.self)
+                MLX.eval(f0Slice)
+                let f0Values = f0Slice.asArray(Float.self)
+                let f0Str = "F0 (First 20): [\(f0Values.map { String(format: "%.4f", $0) }.joined(separator: ", "))]"
+                log(f0Str)
                 
                 // 2. Pitch (Buckets)
-                let pitchData = pitchFinal.asType(Int32.self)[0, 0..<min(20, p_len_val)]
-                var pitchStr = "Pitch (First 20): ["
-                 for i in 0..<pitchData.shape[0] {
-                     pitchStr += String(format: "%d, ", pitchData[i].item(Int32.self))
-                }
-                log(pitchStr + "]")
+                let pitchSlice = pitchFinal[0, 0..<min(20, p_len_val)].asType(Int32.self)
+                MLX.eval(pitchSlice)
+                let pitchValues = pitchSlice.asArray(Int32.self)
+                let pitchStr = "Pitch (First 20): [\(pitchValues.map { String($0) }.joined(separator: ", "))]"
+                log(pitchStr)
                 
                 // 3. Phone (First feature of first 20 frames)
-                let phoneData = phone[0, 0..<min(20, p_len_val), 0]
-                var phoneStr = "Phone[0] (First 20): ["
-                for i in 0..<phoneData.shape[0] {
-                     phoneStr += String(format: "%.4f, ", phoneData[i].item(Float.self))
-                }
-                log(phoneStr + "]")
+                let phoneSlice = phone[0, 0..<min(20, p_len_val), 0].asType(Float.self)
+                MLX.eval(phoneSlice)
+                let phoneValues = phoneSlice.asArray(Float.self)
+                let phoneStr = "Phone[0] (First 20): [\(phoneValues.map { String(format: "%.4f", $0) }.joined(separator: ", "))]"
+                log(phoneStr)
             }
             
             // 6. Synthesizer Inference
@@ -371,5 +515,38 @@ import MLXNN
             )
             
         return audioOut // [1, T_out, 1]
+        }
+
+        /// Run benchmark: perform inference and compare with reference audio
+        public func runBenchmark(audioURL: URL, referenceURL: URL?, outputURL: URL) async throws -> String {
+            // Run inference
+            await infer(audioURL: audioURL, outputURL: outputURL)
+
+            // If reference provided, compare using Python script
+            guard let refURL = referenceURL else {
+                return "Inference completed. No reference provided for comparison."
+            }
+
+            let task = Process()
+            task.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+            task.arguments = [
+                "tools/compare_wavs.py",
+                refURL.path,
+                outputURL.path
+            ]
+
+            let pipe = Pipe()
+            task.standardOutput = pipe
+            task.standardError = pipe
+
+            try task.run()
+            task.waitUntilExit()
+
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            guard let output = String(data: data, encoding: .utf8) else {
+                return "Failed to read comparison output"
+            }
+
+            return output
         }
     }

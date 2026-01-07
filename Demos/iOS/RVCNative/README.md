@@ -38,6 +38,11 @@ Built with a **workspace + SPM package** architecture for clean separation betwe
 - ✅ Native .pth -> .safetensors converter (Pure Swift)
 - ✅ Volume Envelope (RMS mixing) for noise reduction
 - ✅ Nested Zip file handling for imports
+- ✅ RMVPE architecture parity (DeepUnet intermediate channels)
+- ✅ Fixed `ConvTranspose2d` weight transposition format
+- ✅ Resolved `BatchNorm` 5D dimension crashes
+- ✅ Input padding (32-multiple) for RMVPE stability
+- ✅ Output length alignment (F0/Phones sync)
 
 ### Architecture Highlights
 
@@ -59,6 +64,9 @@ Built with a **workspace + SPM package** architecture for clean separation betwe
 - HuBERT GELU activation: `gelu(x, approximate: .none)` (no approximation)
 - Generator input transpose: `(B, C, T) → (B, T, C)` for MLX format
 - Flow reverse pass with proper mask handling
+- **ConvTranspose Transposition**: specialized `(1, 2, 3, 0)` for 4D and `(1, 2, 0)` for 3D to match MLX format
+- **RMVPE U-Net**: doubled intermediate channels and reflect padding
+- **Sequence Alignment**: trimming F0 to exactly 2x phone length for synthesizer broadcast
 
 ## AI Assistant Rules Files
 

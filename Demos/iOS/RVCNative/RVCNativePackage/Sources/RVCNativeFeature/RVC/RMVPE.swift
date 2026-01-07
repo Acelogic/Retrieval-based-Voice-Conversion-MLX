@@ -45,16 +45,17 @@ class ConvBlockRes: Module {
 }
 
 class ResEncoderBlock: Module {
-    let blocks: [ConvBlockRes]
+    let b0, b1, b2, b3: ConvBlockRes?
     let pool: AvgPool2d?
+    let nBlocks: Int
     
     init(inChannels: Int, outChannels: Int, kernelSize: Int?, nBlocks: Int = 1, momentum: Float = 0.01) {
-        var _blocks: [ConvBlockRes] = []
-        _blocks.append(ConvBlockRes(inChannels: inChannels, outChannels: outChannels, momentum: momentum))
-        for _ in 0..<(nBlocks - 1) {
-            _blocks.append(ConvBlockRes(inChannels: outChannels, outChannels: outChannels, momentum: momentum))
-        }
-        self.blocks = _blocks
+        self.nBlocks = nBlocks
+        
+        self.b0 = ConvBlockRes(inChannels: inChannels, outChannels: outChannels, momentum: momentum)
+        self.b1 = nBlocks > 1 ? ConvBlockRes(inChannels: outChannels, outChannels: outChannels, momentum: momentum) : nil
+        self.b2 = nBlocks > 2 ? ConvBlockRes(inChannels: outChannels, outChannels: outChannels, momentum: momentum) : nil
+        self.b3 = nBlocks > 3 ? ConvBlockRes(inChannels: outChannels, outChannels: outChannels, momentum: momentum) : nil
         
         if let k = kernelSize {
             self.pool = AvgPool2d(kernelSize: .init(k), stride: .init(k))
@@ -66,9 +67,11 @@ class ResEncoderBlock: Module {
     
     func callAsFunction(_ x: MLXArray) -> (MLXArray, MLXArray?) {
         var x = x
-        for block in blocks {
-            x = block(x)
-        }
+        if let b = b0 { x = b(x) }
+        if let b = b1 { x = b(x) }
+        if let b = b2 { x = b(x) }
+        if let b = b3 { x = b(x) }
+        
         if let pool = pool {
             return (x, pool(x))
         }
@@ -80,23 +83,31 @@ class ResEncoderBlock: Module {
 
 class Encoder: Module {
     let bn: BatchNorm
-    let layers: [ResEncoderBlock]
+    let l0, l1, l2, l3, l4: ResEncoderBlock
     let outChannel: Int
     
     init(inChannels: Int, inSize: Int, nEncoders: Int, kernelSize: Int, nBlocks: Int, outChannels: Int = 16, momentum: Float = 0.01) {
         self.bn = BatchNorm(featureCount: inChannels, eps: 1e-5, momentum: momentum)
         
-        var _layers: [ResEncoderBlock] = []
-        var currIn = inChannels
-        var currOut = outChannels
+        var cIn = inChannels
+        var cOut = outChannels
         
-        for _ in 0..<nEncoders {
-            _layers.append(ResEncoderBlock(inChannels: currIn, outChannels: currOut, kernelSize: kernelSize, nBlocks: nBlocks, momentum: momentum))
-            currIn = currOut
-            currOut *= 2
-        }
-        self.layers = _layers
-        self.outChannel = currIn * 2
+        self.l0 = ResEncoderBlock(inChannels: cIn, outChannels: cOut, kernelSize: kernelSize, nBlocks: nBlocks, momentum: momentum)
+        cIn = cOut; cOut *= 2
+        
+        self.l1 = ResEncoderBlock(inChannels: cIn, outChannels: cOut, kernelSize: kernelSize, nBlocks: nBlocks, momentum: momentum)
+        cIn = cOut; cOut *= 2
+        
+        self.l2 = ResEncoderBlock(inChannels: cIn, outChannels: cOut, kernelSize: kernelSize, nBlocks: nBlocks, momentum: momentum)
+        cIn = cOut; cOut *= 2
+        
+        self.l3 = ResEncoderBlock(inChannels: cIn, outChannels: cOut, kernelSize: kernelSize, nBlocks: nBlocks, momentum: momentum)
+        cIn = cOut; cOut *= 2
+        
+        self.l4 = ResEncoderBlock(inChannels: cIn, outChannels: cOut, kernelSize: kernelSize, nBlocks: nBlocks, momentum: momentum)
+        cIn = cOut; cOut *= 2
+        
+        self.outChannel = cIn
         super.init()
     }
     
@@ -104,11 +115,14 @@ class Encoder: Module {
         var x = bn(x)
         var concatTensors: [MLXArray] = []
         
+        let layers = [l0, l1, l2, l3, l4]
         for layer in layers {
             let (t, pooled) = layer(x)
             concatTensors.append(t)
             if let p = pooled {
                 x = p
+            } else {
+                x = t
             }
         }
         return (x, concatTensors)
@@ -146,7 +160,8 @@ class ConvTransposed2dBlock: Module {
 class ResDecoderBlock: Module {
     let conv1Trans: ConvTransposed2dBlock
     let bn1: BatchNorm
-    let blocks: [ConvBlockRes]
+    let b0, b1, b2, b3: ConvBlockRes?
+    let nBlocks: Int
     
     init(inChannels: Int, outChannels: Int, stride: (Int, Int), nBlocks: Int = 1, momentum: Float = 0.01) {
         let padding = (1, 1)
@@ -155,12 +170,12 @@ class ResDecoderBlock: Module {
         self.conv1Trans = ConvTransposed2dBlock(inChannels: inChannels, outChannels: outChannels, stride: stride, padding: padding, outputPadding: op)
         self.bn1 = BatchNorm(featureCount: outChannels, eps: 1e-5, momentum: momentum)
         
-        var _blocks: [ConvBlockRes] = []
-        _blocks.append(ConvBlockRes(inChannels: outChannels * 2, outChannels: outChannels, momentum: momentum))
-        for _ in 0..<(nBlocks - 1) {
-             _blocks.append(ConvBlockRes(inChannels: outChannels, outChannels: outChannels, momentum: momentum))
-        }
-        self.blocks = _blocks
+        self.nBlocks = nBlocks
+        self.b0 = ConvBlockRes(inChannels: outChannels * 2, outChannels: outChannels, momentum: momentum)
+        self.b1 = nBlocks > 1 ? ConvBlockRes(inChannels: outChannels, outChannels: outChannels, momentum: momentum) : nil
+        self.b2 = nBlocks > 2 ? ConvBlockRes(inChannels: outChannels, outChannels: outChannels, momentum: momentum) : nil
+        self.b3 = nBlocks > 3 ? ConvBlockRes(inChannels: outChannels, outChannels: outChannels, momentum: momentum) : nil
+        
         super.init()
     }
     
@@ -169,7 +184,6 @@ class ResDecoderBlock: Module {
         x = relu(bn1(x))
         
         // Match dimensions
-        // x: [N, H, W, C], concatTensor: [N, Ht, Wt, Ct]
         let H = x.shape[1]
         let W = x.shape[2]
         let Ht = concatTensor.shape[1]
@@ -181,64 +195,73 @@ class ResDecoderBlock: Module {
             if padH > 0 || padW > 0 {
                 x = padded(x, widths: [[0,0], [0, max(0, padH)], [0, max(0, padW)], [0,0]])
             }
-            // Crop if needed
             if x.shape[1] > Ht { x = x[0..., 0..<Ht, 0..., 0...] }
             if x.shape[2] > Wt { x = x[0..., 0..., 0..<Wt, 0...] }
         }
         
         x = concatenated([x, concatTensor], axis: -1)
         
-        for block in blocks {
-            x = block(x)
-        }
+        if let b = b0 { x = b(x) }
+        if let b = b1 { x = b(x) }
+        if let b = b2 { x = b(x) }
+        if let b = b3 { x = b(x) }
+        
         return x
     }
 }
 
 class Decoder: Module {
-    let layers: [ResDecoderBlock]
+    let l0, l1, l2, l3, l4: ResDecoderBlock
     
     init(inChannels: Int, nDecoders: Int, stride: (Int, Int), nBlocks: Int, momentum: Float = 0.01) {
-        var _layers: [ResDecoderBlock] = []
-        var currIn = inChannels
+        var cIn = inChannels
+        var cOut = cIn / 2
         
-        for _ in 0..<nDecoders {
-            let outChannels = currIn / 2
-            _layers.append(ResDecoderBlock(inChannels: currIn, outChannels: outChannels, stride: stride, nBlocks: nBlocks, momentum: momentum))
-            currIn = outChannels
-        }
-        self.layers = _layers
-         super.init()
+        self.l0 = ResDecoderBlock(inChannels: cIn, outChannels: cOut, stride: stride, nBlocks: nBlocks, momentum: momentum)
+        cIn = cOut; cOut = cIn / 2
+        
+        self.l1 = ResDecoderBlock(inChannels: cIn, outChannels: cOut, stride: stride, nBlocks: nBlocks, momentum: momentum)
+        cIn = cOut; cOut = cIn / 2
+        
+        self.l2 = ResDecoderBlock(inChannels: cIn, outChannels: cOut, stride: stride, nBlocks: nBlocks, momentum: momentum)
+        cIn = cOut; cOut = cIn / 2
+        
+        self.l3 = ResDecoderBlock(inChannels: cIn, outChannels: cOut, stride: stride, nBlocks: nBlocks, momentum: momentum)
+        cIn = cOut; cOut = cIn / 2
+        
+        self.l4 = ResDecoderBlock(inChannels: cIn, outChannels: cOut, stride: stride, nBlocks: nBlocks, momentum: momentum)
+        
+        super.init()
     }
     
     func callAsFunction(_ x: MLXArray, concatTensors: [MLXArray]) -> MLXArray {
         var x = x
-        for (i, layer) in layers.enumerated() {
-            x = layer(x, concatTensor: concatTensors[concatTensors.count - 1 - i])
-        }
+        x = l0(x, concatTensor: concatTensors[4])
+        x = l1(x, concatTensor: concatTensors[3])
+        x = l2(x, concatTensor: concatTensors[2])
+        x = l3(x, concatTensor: concatTensors[1])
+        x = l4(x, concatTensor: concatTensors[0])
         return x
     }
 }
 
 class Intermediate: Module {
-    let layers: [ResEncoderBlock]
+    let l0, l1, l2, l3: ResEncoderBlock
     
     init(inChannels: Int, outChannels: Int, nInters: Int, nBlocks: Int, momentum: Float = 0.01) {
-        var _layers: [ResEncoderBlock] = []
-        _layers.append(ResEncoderBlock(inChannels: inChannels, outChannels: outChannels, kernelSize: nil, nBlocks: nBlocks, momentum: momentum))
-        for _ in 0..<(nInters - 1) {
-             _layers.append(ResEncoderBlock(inChannels: outChannels, outChannels: outChannels, kernelSize: nil, nBlocks: nBlocks, momentum: momentum))
-        }
-        self.layers = _layers
+        self.l0 = ResEncoderBlock(inChannels: inChannels, outChannels: outChannels, kernelSize: nil, nBlocks: nBlocks, momentum: momentum)
+        self.l1 = ResEncoderBlock(inChannels: outChannels, outChannels: outChannels, kernelSize: nil, nBlocks: nBlocks, momentum: momentum)
+        self.l2 = ResEncoderBlock(inChannels: outChannels, outChannels: outChannels, kernelSize: nil, nBlocks: nBlocks, momentum: momentum)
+        self.l3 = ResEncoderBlock(inChannels: outChannels, outChannels: outChannels, kernelSize: nil, nBlocks: nBlocks, momentum: momentum)
         super.init()
     }
     
     func callAsFunction(_ x: MLXArray) -> MLXArray {
         var x = x
-        for layer in layers {
-            let (out, _) = layer(x)
-            x = out
-        }
+        x = l0(x).0
+        x = l1(x).0
+        x = l2(x).0
+        x = l3(x).0
         return x
     }
 }
@@ -250,18 +273,24 @@ class DeepUnet: Module {
     
     init(kernelSize: Int, nBlocks: Int, enDeLayers: Int = 5, interLayers: Int = 4, inChannels: Int = 1, enOutChannels: Int = 16) {
         self.encoder = Encoder(inChannels: inChannels, inSize: 128, nEncoders: enDeLayers, kernelSize: kernelSize, nBlocks: nBlocks, outChannels: enOutChannels)
-        let encOutCh = self.encoder.outChannel
+        let encOutCh = self.encoder.outChannel // 256
         
-        self.intermediate = Intermediate(inChannels: encOutCh / 2, outChannels: encOutCh, nInters: interLayers, nBlocks: nBlocks)
-        self.decoder = Decoder(inChannels: encOutCh, nDecoders: enDeLayers, stride: (kernelSize, kernelSize), nBlocks: nBlocks)
+        // Python doubles channels here: Intermediate(256, 512)
+        self.intermediate = Intermediate(inChannels: encOutCh, outChannels: encOutCh * 2, nInters: interLayers, nBlocks: nBlocks)
+        // Decoder starts with the doubled channel count: Decoder(512)
+        self.decoder = Decoder(inChannels: encOutCh * 2, nDecoders: enDeLayers, stride: (kernelSize, kernelSize), nBlocks: nBlocks)
         
         super.init()
     }
     
     func callAsFunction(_ x: MLXArray) -> MLXArray {
+        print("DEBUG RMVPE: DeepUnet input shape \(x.shape)")
         let (encOut, concatTensors) = encoder(x)
+        print("DEBUG RMVPE: Encoder output shape \(encOut.shape), concats: \(concatTensors.map { $0.shape })")
         let interOut = intermediate(encOut)
+        print("DEBUG RMVPE: Intermediate output shape \(interOut.shape)")
         let decOut = decoder(interOut, concatTensors: concatTensors)
+        print("DEBUG RMVPE: Decoder output shape \(decOut.shape)")
         return decOut
     }
 }
@@ -277,11 +306,9 @@ class PyTorchGRU: Module {
     let inputSize: Int
     let hiddenSize: Int
     
-    // Weight matrices: [3*H, D] and [3*H, H]
+    // Parameters - must be var or let property for MLX registration
     var weight_ih: MLXArray
     var weight_hh: MLXArray
-    
-    // Bias vectors: [3*H] each
     var bias_ih: MLXArray?
     var bias_hh: MLXArray?
     
@@ -364,42 +391,32 @@ class PyTorchGRU: Module {
 class BiGRU: Module {
     let numLayers: Int
     let hiddenFeatures: Int
-    let forwardGRUs: [PyTorchGRU]
-    let backwardGRUs: [PyTorchGRU]
+    
+    // Explicit properties for 1 layer (standard for RMVPE)
+    let fwd0: PyTorchGRU
+    let bwd0: PyTorchGRU
     
     init(inputFeatures: Int, hiddenFeatures: Int, numLayers: Int) {
         self.numLayers = numLayers
         self.hiddenFeatures = hiddenFeatures
         
-        var _fwd: [PyTorchGRU] = []
-        var _bwd: [PyTorchGRU] = []
+        self.fwd0 = PyTorchGRU(inputSize: inputFeatures, hiddenSize: hiddenFeatures, bias: true)
+        self.bwd0 = PyTorchGRU(inputSize: inputFeatures, hiddenSize: hiddenFeatures, bias: true)
         
-        for i in 0..<numLayers {
-            let dim = (i == 0) ? inputFeatures : hiddenFeatures * 2
-            _fwd.append(PyTorchGRU(inputSize: dim, hiddenSize: hiddenFeatures, bias: true))
-            _bwd.append(PyTorchGRU(inputSize: dim, hiddenSize: hiddenFeatures, bias: true))
-        }
-        self.forwardGRUs = _fwd
-        self.backwardGRUs = _bwd
         super.init()
     }
     
     func callAsFunction(_ x: MLXArray) -> MLXArray {
         var x = x // [N, L, C]
         
-        for i in 0..<numLayers {
-            let fwd = forwardGRUs[i]
-            let bwd = backwardGRUs[i]
-            
-            let outFwd = fwd(x) // [N, L, H]
-            
-            // Reverse for backward along axis 1 (L)
-            let xRev = x[0..., .stride(by: -1), 0...]
-            let outBwdRev = bwd(xRev)
-            let outBwd = outBwdRev[0..., .stride(by: -1), 0...]
-            
-            x = concatenated([outFwd, outBwd], axis: -1)
-        }
+        let outFwd = fwd0(x) // [N, L, H]
+        
+        // Reverse for backward along axis 1 (L)
+        let xRev = x[0..., .stride(by: -1), 0...]
+        let outBwdRev = bwd0(xRev)
+        let outBwd = outBwdRev[0..., .stride(by: -1), 0...]
+        
+        x = concatenated([outFwd, outBwd], axis: -1)
         return x
     }
 }
@@ -436,9 +453,8 @@ class RMVPE: Module {
     }
     
     func callAsFunction(_ mel: MLXArray) -> MLXArray {
-        // mel: [N, T, n_mels] (128)
-        // UNet expects [N, H, W, C] -> [N, T, n_mels, 1]
-        var x = mel.expandedDimensions(axis: -1)
+        // mel: [1, T, n_mels, 1] (from infer())
+        var x = mel
         
         x = unet(x) // [N, T, n_mels, 16]
         
@@ -561,15 +577,34 @@ class RMVPE: Module {
         let mel = melProcessor(audio) // [n_mels, T_frames] (Log Mel) (128, T)
         print("DEBUG: Mel Spectrogram Stats: min \(mel.min().item(Float.self)), max \(mel.max().item(Float.self)), shape \(mel.shape)")
         
-        // Model expects [N, T, n_mels] (transposed)
-        // mel.T -> [T_frames, n_mels]. Add dim [1, T, n_mels]
-        let melInput = mel.transposed().expandedDimensions(axis: 0)
+        // Model expects [1, T, n_mels, 1]
+        // mel: [128, T]
+        let nFrames = mel.shape[1]
+        let padCurr = 32 * ((nFrames - 1) / 32 + 1) - nFrames
+        
+        var melPadded = mel
+        if padCurr > 0 {
+            // Reflect padding on the time axis (axis 1)
+            // Python: mel_padded = np.pad(mel, ((0, 0), (0, pad_curr)), mode='reflect')
+            // Using our manual reflection logic for axis 1
+            let n = nFrames
+            let indices = Array(0..<padCurr).map { n - 2 - ($0 % (n - 1)) }
+            let padIdx = MLXArray(indices.map { Int32($0) })
+            let reflection = mel[0..., padIdx]
+            melPadded = concatenated([mel, reflection], axis: 1)
+        }
+        
+        // [128, T_padded] -> [T_padded, 128] -> [1, T_padded, 128, 1]
+        let melInput = melPadded.transposed().expandedDimensions(axis: 0).expandedDimensions(axis: -1)
         
         // Run model
-        let hidden = self(melInput) // [1, T, 360]
+        let hidden = self(melInput) // [1, T_padded, 360]
+        
+        // Take only original n_frames
+        let hiddenTrimmed = hidden[0..., 0..<nFrames, 0...]
         
         // Decode
-        let f0 = self.decode(hidden, thred: thred) // [T, 1]
+        let f0 = self.decode(hiddenTrimmed, thred: thred) // [T, 1]
         
         // DEBUG Stats
         let f0_min = f0.min().item(Float.self)
@@ -675,8 +710,18 @@ class MelSpectrogram {
         if window == nil { window = create_window() }
         
         let pad_len = n_fft / 2
+        let n = audio.size
         
-        let audio_padded = padded(audio, widths: [[pad_len, pad_len]]) 
+        // Manual reflection padding using MLX native slicing
+        // Left pad: reverse of the start
+        let leftIdx = MLXArray(stride(from: pad_len, to: 0, by: -1))
+        let leftPad = audio[leftIdx]
+        
+        // Right pad: reverse of the end
+        let rightIdx = MLXArray(stride(from: n - 2, to: n - pad_len - 2, by: -1))
+        let rightPad = audio[rightIdx]
+        
+        let audio_padded = concatenated([leftPad, audio, rightPad], axis: 0)
         
         let len_p = audio_padded.shape[0]
         let num_frames = 1 + (len_p - n_fft) / hop_length
