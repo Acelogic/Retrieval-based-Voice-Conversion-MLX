@@ -115,16 +115,24 @@ for k in sorted(weights.keys()):
 
 ---
 
-## Common Issues
+## Common Issues & Solutions
 
 ### 1. 100% Voiced Frames (maxx all high)
 **Cause:** MLXNN GRU with wrong bias format
-**Fix:** Use PyTorchGRU implementation
+**Fix:** ✅ Use PyTorchGRU implementation
 
 ### 2. 0% Voiced Frames (maxx all low)
 **Cause:** GRU weights not loading (key mismatch)
-**Fix:** Use camelCase for array properties (`forwardGRUs` not `forward_grus`)
+**Fix:** ✅ Use camelCase for array properties (`forwardGRUs` not `forward_grus`)
 
-### 3. ~5% Voiced Frames (maxx slightly above threshold)
-**Cause:** GRU working but upstream layers (UNet/CNN) may have issues
-**Status:** Currently investigating
+### 3. NaN Outputs / Signal Explosion (RESOLVED - Jan 7, 2026)
+**Cause:** MLX Swift's BatchNorm doesn't expose `runningMean`/`runningVar` via `parameters()`. Weights were loaded but running stats stayed at defaults (mean=0, var=1), causing catastrophic normalization failure.
+**Symptoms:**
+- RMVPE encoder output exploding (values reaching 1e18)
+- NaN in final F0 predictions
+- All F0 values become 0 Hz
+**Fix:** ✅ Created `CustomBatchNorm` class that exposes running stats as explicit `MLXArray` properties
+- Replaced all BatchNorm instances in RMVPE with CustomBatchNorm
+- Fixed epsilon mismatch (1e-3 → 1e-5)
+- Added `setTrainingMode()` to properly set eval mode
+**See:** `Demos/iOS/AUDIO_QUALITY_FIX.md` Section 6 for full details

@@ -146,6 +146,90 @@ def convert_hubert_model(hubert_path: Path, output_path: Path):
 
     return output_file
 
+def remap_rmvpe_key(key: str) -> str:
+    """
+    Remap RMVPE keys to match Swift structure.
+    
+    Swift Structure:
+    - unet.encoder.l0... (instead of layers.0)
+    - unet.encoder.l0.b0... (instead of blocks.0)
+    - bigru.fwd0... (instead of fc.0.gru.forward_grus.0)
+    - linear... (instead of fc.1)
+    """
+    import re
+    new_key = key
+    
+    # 1. Map FC layers (BiGRU and Linear)
+    # PyTorch: fc.0.gru.forward_grus.0... -> Swift: bigru.fwd0...
+    # Python MLX (.npz): fc.bigru.forward_grus.0... -> Swift: bigru.fwd0...
+    
+    # Handle BiGRU
+    if "fc.0.gru." in new_key or "fc.bigru." in new_key:
+        new_key = new_key.replace("fc.0.gru.", "bigru.")
+        new_key = new_key.replace("fc.bigru.", "bigru.")
+        
+        new_key = new_key.replace("forward_grus.0", "fwd0")
+        new_key = new_key.replace("backward_grus.0", "bwd0")
+        
+        # Handle PyTorch's flat GRU naming (weight_ih_l0, weight_ih_l0_reverse)
+        # _l0_reverse -> bwd0
+        if "_l0_reverse" in new_key:
+            new_key = new_key.replace("_l0_reverse", "")
+            # Insert .bwd0. before the parameter name
+            # e.g. bigru.weight_ih -> bigru.bwd0.weight_ih
+            parts = new_key.split('.')
+            # parts = ['bigru', 'weight_ih']
+            if len(parts) >= 2:
+                new_key = f"{parts[0]}.bwd0.{parts[1]}"
+                
+        # _l0 -> fwd0
+        elif "_l0" in new_key:
+            new_key = new_key.replace("_l0", "")
+            # Insert .fwd0. before the parameter name
+            parts = new_key.split('.')
+            if len(parts) >= 2:
+                new_key = f"{parts[0]}.fwd0.{parts[1]}"
+
+    # Handle Linear
+    # PyTorch: fc.1... -> Swift: linear...
+    # Python MLX: fc.linear... -> Swift: linear...
+    if "fc.1." in new_key:
+        new_key = new_key.replace("fc.1.", "linear.")
+    if "fc.linear." in new_key:
+        new_key = new_key.replace("fc.linear.", "linear.")
+
+    # 2. Map UNet Structure
+    # layers.X -> lX
+    new_key = re.sub(r'\.layers\.(\d+)\.', r'.l\1.', new_key)
+    
+    # Map blocks
+    # Encoder/Intermediate: conv.N -> bN (where N is digit)
+    if ".encoder." in new_key or ".intermediate." in new_key:
+        new_key = re.sub(r'\.conv\.(\d+)\.', r'.b\1.', new_key)
+        
+    # Decoder: conv2.N -> bN
+    if ".decoder." in new_key:
+        new_key = re.sub(r'\.conv2\.(\d+)\.', r'.b\1.', new_key)
+        
+        # Decoder conv1 mapping
+        # PyTorch: conv1.0.weight -> Swift: conv1Trans.convTranspose.weight
+        if ".conv1.0." in new_key:
+             new_key = new_key.replace(".conv1.0.", ".conv1Trans.convTranspose.")
+        # PyTorch: conv1.1.weight -> Swift: bn1.weight
+        if ".conv1.1." in new_key:
+             new_key = new_key.replace(".conv1.1.", ".bn1.")
+
+    # 3. Inside blocks: conv.X -> conv1/2, bn1/2
+    # Only if we successfully mapped to .bN. to avoid replacing top-level convs incorrectly
+    if ".b" in new_key:
+        new_key = new_key.replace(".conv.0.", ".conv1.")
+        new_key = new_key.replace(".conv.1.", ".bn1.")
+        new_key = new_key.replace(".conv.3.", ".conv2.")
+        new_key = new_key.replace(".conv.4.", ".bn2.")
+        new_key = new_key.replace(".shortcut.0.", ".shortcut.")
+        
+    return new_key
+
 def convert_rmvpe_model(rmvpe_path: Path, output_path: Path):
     """Convert RMVPE model to MLX format"""
 
@@ -161,6 +245,8 @@ def convert_rmvpe_model(rmvpe_path: Path, output_path: Path):
     print(f"Loading RMVPE from: {rmvpe_path}")
 
     # RMVPE can be .pt or .npz format
+    mlx_weights = {}
+    
     if rmvpe_path.suffix == '.pt':
         checkpoint = torch.load(rmvpe_path, map_location='cpu')
 
@@ -169,10 +255,12 @@ def convert_rmvpe_model(rmvpe_path: Path, output_path: Path):
         else:
             state_dict = checkpoint
 
-        mlx_weights = {}
         for key, value in state_dict.items():
             if isinstance(value, torch.Tensor):
                 numpy_array = value.detach().cpu().numpy()
+                
+                # Remap key
+                new_key = remap_rmvpe_key(key)
                 
                 # TRANSPOSE CONV WEIGHTS: 
                 # 3D: PyTorch [Out, In, K] -> MLX [Out, K, In]
@@ -188,16 +276,24 @@ def convert_rmvpe_model(rmvpe_path: Path, output_path: Path):
                         numpy_array = numpy_array.transpose(0, 2, 3, 1)
                 
                 mlx_array = mx.array(numpy_array)
-                mlx_weights[key] = mlx_array
-                print(f"  {key}: {mlx_array.shape}")
+                mlx_weights[new_key] = mlx_array
+                if key != new_key:
+                    print(f"  {key} -> {new_key} {mlx_array.shape}")
+                else:
+                    print(f"  {key}: {mlx_array.shape}")
 
     elif rmvpe_path.suffix == '.npz':
         # Already in numpy format
         data = np.load(rmvpe_path)
-        mlx_weights = {}
         for key in data.files:
-            mlx_weights[key] = mx.array(data[key])
-            print(f"  {key}: {mlx_weights[key].shape}")
+            # Remap key
+            new_key = remap_rmvpe_key(key)
+            
+            mlx_weights[new_key] = mx.array(data[key])
+            if key != new_key:
+                print(f"  {key} -> {new_key} {mlx_weights[new_key].shape}")
+            else:
+                print(f"  {key}: {mlx_weights[new_key].shape}")
 
     output_file = output_path / "rmvpe.safetensors"
     print(f"\nSaving to: {output_file}")

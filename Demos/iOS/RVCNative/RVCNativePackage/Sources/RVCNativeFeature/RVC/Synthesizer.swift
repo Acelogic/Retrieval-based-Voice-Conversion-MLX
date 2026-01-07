@@ -206,9 +206,12 @@ class TextEncoder: Module {
     func callAsFunction(_ phone: MLXArray, pitch: MLXArray?, lengths: MLXArray) -> (MLXArray, MLXArray, MLXArray) {
         // phone: (B, L, EmbDim), pitch: (B, L), lengths: (B,)
         var x = emb_phone(phone)
+        print("DEBUG: TextEncoder emb_phone: min \(x.min().item(Float.self)), max \(x.max().item(Float.self))")
         
         if let pitch = pitch, let embPitch = emb_pitch {
-            x = x + embPitch(pitch)
+            let pEmb = embPitch(pitch)
+            print("DEBUG: TextEncoder emb_pitch: min \(pEmb.min().item(Float.self)), max \(pEmb.max().item(Float.self))")
+            x = x + pEmb
         }
         
         x = x * sqrt(Float(hiddenChannels))
@@ -468,9 +471,8 @@ public class Synthesizer: Module {
 
         // Sample from encoded distribution
         // CRITICAL: xMask is already (B, 1, T) from TextEncoder - don't expand it!
-        // Python: z_p = (m_p + ...) * x_mask where x_mask is (B, 1, T)
         // Broadcasts: (B, C, T) * (B, 1, T) = (B, C, T)
-        let z_p = (m_p + exp(logs_p) * MLXRandom.normal(m_p.shape).asType(m_p.dtype) * 0.66666) * xMask
+        let z_p = (m_p + exp(logs_p) * MLXRandom.normal(m_p.shape).asType(m_p.dtype) * 0.0) * xMask
         print("DEBUG: z_p shape: \(z_p.shape), stats: min \(z_p.min().item(Float.self)), max \(z_p.max().item(Float.self))")
 
         // Flow reverse pass

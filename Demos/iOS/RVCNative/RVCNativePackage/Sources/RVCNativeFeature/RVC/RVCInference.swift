@@ -120,13 +120,19 @@ import MLXNN
                         detectedSR = sr
                         log("RVCInference: Detected Sample Rate \(detectedSR)Hz")
                     }
-                    if json.count > 12, let u = json[12] as? [Int] {
-                        detectedUpsRates = u
-                        log("RVCInference: Detected Upsample Rates \(detectedUpsRates)")
+                    if json.count > 12, let uArr = json[12] as? [Any] {
+                        let u = uArr.compactMap { $0 as? Int }
+                        if !u.isEmpty {
+                            detectedUpsRates = u
+                            log("RVCInference: Detected Upsample Rates \(detectedUpsRates)")
+                        }
                     }
-                    if json.count > 14, let k = json[14] as? [Int] {
-                        detectedKernelSizes = k
-                        log("RVCInference: Detected Kernel Sizes \(detectedKernelSizes)")
+                    if json.count > 14, let kArr = json[14] as? [Any] {
+                        let k = kArr.compactMap { $0 as? Int }
+                        if !k.isEmpty {
+                            detectedKernelSizes = k
+                            log("RVCInference: Detected Kernel Sizes \(detectedKernelSizes)")
+                        }
                     }
                 }
             }
@@ -224,6 +230,10 @@ import MLXNN
                     }
                 }
 
+                if newK.contains("enc_p.emb_pitch") {
+                    log("DEBUG: check - Found Pitch Embedding Key: \(newK)")
+                }
+                
                 synthParams[newK] = newV
             }
 
@@ -354,19 +364,21 @@ import MLXNN
                     }
                     
                     log("RVCInference: RMVPE sample keys after remapping: \(Array(remappedRMVPE.keys.prefix(5)))")
-                    
+
+                    // Check if running stats are in the remapped dict
+                    let bnRunningKeys = remappedRMVPE.keys.filter { $0.contains("encoder.bn.running") }
+                    log("RVCInference: BN running stat keys to load: \(bnRunningKeys)")
+                    if let rmKey = remappedRMVPE["unet.encoder.bn.runningMean"] {
+                        log("RVCInference: encoder.bn.runningMean value: \(rmKey.asArray(Float.self))")
+                    }
+                    if let rvKey = remappedRMVPE["unet.encoder.bn.runningVar"] {
+                        log("RVCInference: encoder.bn.runningVar value: \(rvKey.asArray(Float.self))")
+                    }
+
                     self.rmvpe?.update(parameters: ModuleParameters.unflattened(remappedRMVPE))
-                    self.rmvpe?.train(false)  // CRITICAL: Set to eval mode for correct inference
-                    
-                    // DEBUG: Log matches
-                    let modelKeys = self.rmvpe?.parameters().flattened().map { $0.0 } ?? []
-                    log("RVCInference: Model Expected Keys (sample): \(modelKeys.prefix(10))")
-                    
-                    // Check if unet.encoder.bn.runningMean exists
-                    let expectedBNKey = modelKeys.first { $0.contains("bn") }
-                    log("RVCInference: Found BN key in model: \(String(describing: expectedBNKey))")
-                    
-                    log("RVCInference: Loaded RMVPE weights: \(remappedRMVPE.count) keys")
+                    self.rmvpe?.setTrainingMode(false)  // CRITICAL: Set to eval mode for correct inference
+
+                    log("RVCInference: ✅ RMVPE loaded with CustomBatchNorm (\(remappedRMVPE.count) keys)")
                 } catch {
                     log("RVCInference: Failed to load RMVPE: \(error). Using fallback F0.")
                     self.rmvpe = nil
@@ -386,7 +398,7 @@ import MLXNN
                 DispatchQueue.main.async { self.status = "Loading Audio..." }
                 
                 // Load whole audio (Float array size is fine, just not tensors)
-                let (audioArray, sampleRate) = try AudioProcessor.shared.loadAudio(url: audioURL)
+                let (audioArray, _) = try AudioProcessor.shared.loadAudio(url: audioURL)
                 // audioArray: [TotalSamples]
                 
                 let totalSamples = audioArray.size

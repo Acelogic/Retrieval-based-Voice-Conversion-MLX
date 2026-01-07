@@ -2,24 +2,94 @@
 import Foundation
 import MLX
 import MLXNN
-import MLXFFT 
+import MLXFFT
+
+// MARK: - Custom BatchNorm with Running Stats Support
+
+/// Custom BatchNorm that properly supports loading running_mean and running_var
+/// MLX Swift's default BatchNorm doesn't expose running stats via parameters()
+class CustomBatchNorm: Module {
+    var weight: MLXArray
+    var bias: MLXArray
+    var runningMean: MLXArray
+    var runningVar: MLXArray
+    let eps: Float
+    let momentum: Float
+    var isTraining: Bool = true
+
+    init(featureCount: Int, eps: Float = 1e-5, momentum: Float = 0.1) {
+        self.eps = eps
+        self.momentum = momentum
+
+        // Initialize parameters (trainable)
+        self.weight = MLXArray.ones([featureCount])
+        self.bias = MLXArray.zeros([featureCount])
+
+        // Initialize running stats (non-trainable but loadable)
+        self.runningMean = MLXArray.zeros([featureCount])
+        self.runningVar = MLXArray.ones([featureCount])
+
+        super.init()
+    }
+
+    func setTrainingMode(_ mode: Bool) {
+        self.isTraining = mode
+    }
+
+    func callAsFunction(_ x: MLXArray) -> MLXArray {
+        // x shape: [N, H, W, C] for Conv2d
+        // Normalize over the channel dimension (last axis)
+
+        if isTraining {
+            // Training mode: use batch statistics
+            let axes = Array(0..<(x.ndim - 1))
+            let mean = x.mean(axes: axes, keepDims: true)
+            let variance = ((x - mean) * (x - mean)).mean(axes: axes, keepDims: true)
+
+            // Update running stats
+            let squeezedMean = mean.squeezed()
+            let squeezedVar = variance.squeezed()
+            runningMean = runningMean * (1 - momentum) + squeezedMean * momentum
+            runningVar = runningVar * (1 - momentum) + squeezedVar * momentum
+
+            // Normalize
+            let normalized = (x - mean) / sqrt(variance + eps)
+            return normalized * weight + bias
+        } else {
+            // Eval mode: use running statistics
+            // Reshape running stats to match input [1, 1, 1, C] for broadcasting
+            let shape = [Int](repeating: 1, count: x.ndim - 1) + [x.shape.last!]
+            let mean = runningMean.reshaped(shape)
+            let variance = runningVar.reshaped(shape)
+
+            // Normalize
+            let normalized = (x - mean) / sqrt(variance + eps)
+
+            // Reshape weight and bias for broadcasting
+            let w = weight.reshaped(shape)
+            let b = bias.reshaped(shape)
+
+            return normalized * w + b
+        }
+    }
+}
 
 // MARK: - Basic Blocks
 
 class ConvBlockRes: Module {
     let conv1: Conv2d
-    let bn1: BatchNorm
+    let bn1: CustomBatchNorm
     let conv2: Conv2d
-    let bn2: BatchNorm
+    let bn2: CustomBatchNorm
     let shortcut: Conv2d?
-    
+
     init(inChannels: Int, outChannels: Int, momentum: Float = 0.01) {
         self.conv1 = Conv2d(inputChannels: inChannels, outputChannels: outChannels, kernelSize: 3, stride: 1, padding: 1, bias: false)
         // (featureCount, eps, momentum)
-        self.bn1 = BatchNorm(featureCount: outChannels, eps: 1e-5, momentum: momentum)
-        
+        self.bn1 = CustomBatchNorm(featureCount: outChannels, eps: 1e-5, momentum: momentum)
+
         self.conv2 = Conv2d(inputChannels: outChannels, outputChannels: outChannels, kernelSize: 3, stride: 1, padding: 1, bias: false)
-        self.bn2 = BatchNorm(featureCount: outChannels, eps: 1e-5, momentum: momentum)
+        self.bn2 = CustomBatchNorm(featureCount: outChannels, eps: 1e-5, momentum: momentum)
         
         if inChannels != outChannels {
             self.shortcut = Conv2d(inputChannels: inChannels, outputChannels: outChannels, kernelSize: 1, stride: 1, bias: true)
@@ -82,17 +152,14 @@ class ResEncoderBlock: Module {
 // MARK: - Encoder
 
 class Encoder: Module {
-    let bn: BatchNorm
+    let bn: CustomBatchNorm
     let l0, l1, l2, l3, l4: ResEncoderBlock
     let outChannel: Int
-    
+
     init(inChannels: Int, inSize: Int, nEncoders: Int, kernelSize: Int, nBlocks: Int, outChannels: Int = 16, momentum: Float = 0.01) {
-        self.bn = BatchNorm(featureCount: inChannels, eps: 1e-5, momentum: momentum)
-        
-        // DEBUG: Check BatchNorm property names via Mirror
-        let mirror = Mirror(reflecting: self.bn)
-        print("DEBUG: BatchNorm properties: \(mirror.children.map { $0.label })")
-        
+        // CRITICAL FIX: Match Python eps=1e-5 (was 1e-3)
+        self.bn = CustomBatchNorm(featureCount: inChannels, eps: 1e-5, momentum: momentum)
+
         var cIn = inChannels
         var cOut = outChannels
         
@@ -117,14 +184,17 @@ class Encoder: Module {
     
     func callAsFunction(_ x: MLXArray) -> (MLXArray, [MLXArray]) {
         var x = bn(x)
+        print("DEBUG RMVPE Encoder: After input BN - min \(x.min().item(Float.self)), max \(x.max().item(Float.self)), mean \(x.mean().item(Float.self))")
         var concatTensors: [MLXArray] = []
-        
+
         let layers = [l0, l1, l2, l3, l4]
-        for layer in layers {
+        for (idx, layer) in layers.enumerated() {
             let (t, pooled) = layer(x)
+            print("DEBUG RMVPE Encoder: Layer \(idx) output - min \(t.min().item(Float.self)), max \(t.max().item(Float.self)), mean \(t.mean().item(Float.self))")
             concatTensors.append(t)
             if let p = pooled {
                 x = p
+                print("DEBUG RMVPE Encoder: Layer \(idx) pooled - min \(p.min().item(Float.self)), max \(p.max().item(Float.self)), mean \(p.mean().item(Float.self))")
             } else {
                 x = t
             }
@@ -163,16 +233,16 @@ class ConvTransposed2dBlock: Module {
 
 class ResDecoderBlock: Module {
     let conv1Trans: ConvTransposed2dBlock
-    let bn1: BatchNorm
+    let bn1: CustomBatchNorm
     let b0, b1, b2, b3: ConvBlockRes?
     let nBlocks: Int
-    
+
     init(inChannels: Int, outChannels: Int, stride: (Int, Int), nBlocks: Int = 1, momentum: Float = 0.01) {
         let padding = (1, 1)
         let op = (stride == (1, 2)) ? (0, 1) : (1, 1)
-        
+
         self.conv1Trans = ConvTransposed2dBlock(inChannels: inChannels, outChannels: outChannels, stride: stride, padding: padding, outputPadding: op)
-        self.bn1 = BatchNorm(featureCount: outChannels, eps: 1e-5, momentum: momentum)
+        self.bn1 = CustomBatchNorm(featureCount: outChannels, eps: 1e-5, momentum: momentum)
         
         self.nBlocks = nBlocks
         self.b0 = ConvBlockRes(inChannels: outChannels * 2, outChannels: outChannels, momentum: momentum)
@@ -455,7 +525,57 @@ class RMVPE: Module {
         
         super.init()
     }
-    
+
+    /// Set training mode including custom BatchNorm layers
+    func setTrainingMode(_ mode: Bool) {
+        self.train(mode)  // Call parent's train()
+
+        // Manually set training mode on all CustomBatchNorm instances in the UNet
+        // Since recursive traversal of NestedItem is complex, we access known paths directly
+        unet.encoder.bn.setTrainingMode(mode)
+
+        // Set training mode for all layers in encoder/intermediate/decoder
+        setLayerTrainingMode(mode, layers: [
+            unet.encoder.l0, unet.encoder.l1, unet.encoder.l2, unet.encoder.l3, unet.encoder.l4
+        ])
+        setLayerTrainingMode(mode, layers: [
+            unet.intermediate.l0, unet.intermediate.l1, unet.intermediate.l2, unet.intermediate.l3
+        ])
+        setLayerTrainingMode(mode, layers: [
+            unet.decoder.l0, unet.decoder.l1, unet.decoder.l2, unet.decoder.l3, unet.decoder.l4
+        ])
+    }
+
+    private func setLayerTrainingMode(_ mode: Bool, layers: [Module]) {
+        for layer in layers {
+            if let encLayer = layer as? ResEncoderBlock {
+                setResEncoderBlockTrainingMode(mode, block: encLayer)
+            } else if let decLayer = layer as? ResDecoderBlock {
+                setResDecoderBlockTrainingMode(mode, block: decLayer)
+            }
+        }
+    }
+
+    private func setResEncoderBlockTrainingMode(_ mode: Bool, block: ResEncoderBlock) {
+        if let b0 = block.b0 { setConvBlockResTrainingMode(mode, block: b0) }
+        if let b1 = block.b1 { setConvBlockResTrainingMode(mode, block: b1) }
+        if let b2 = block.b2 { setConvBlockResTrainingMode(mode, block: b2) }
+        if let b3 = block.b3 { setConvBlockResTrainingMode(mode, block: b3) }
+    }
+
+    private func setResDecoderBlockTrainingMode(_ mode: Bool, block: ResDecoderBlock) {
+        block.bn1.setTrainingMode(mode)
+        if let b0 = block.b0 { setConvBlockResTrainingMode(mode, block: b0) }
+        if let b1 = block.b1 { setConvBlockResTrainingMode(mode, block: b1) }
+        if let b2 = block.b2 { setConvBlockResTrainingMode(mode, block: b2) }
+        if let b3 = block.b3 { setConvBlockResTrainingMode(mode, block: b3) }
+    }
+
+    private func setConvBlockResTrainingMode(_ mode: Bool, block: ConvBlockRes) {
+        block.bn1.setTrainingMode(mode)
+        block.bn2.setTrainingMode(mode)
+    }
+
     func callAsFunction(_ mel: MLXArray) -> MLXArray {
         // mel: [1, T, n_mels, 1] (from infer())
         var x = mel
@@ -584,6 +704,7 @@ class RMVPE: Module {
     func infer(audio: MLXArray, thred: Float = 0.03) -> MLXArray {
         // audio: [T]
         let melProcessor = MelSpectrogram()
+        melProcessor.debug_mel_filterbank()
         let mel = melProcessor(audio) // [n_mels, T_frames] (Log Mel) (128, T)
         print("DEBUG: Mel Spectrogram Stats: min \(mel.min().item(Float.self)), max \(mel.max().item(Float.self)), shape \(mel.shape)")
         
@@ -606,9 +727,11 @@ class RMVPE: Module {
         
         // [128, T_padded] -> [T_padded, 128] -> [1, T_padded, 128, 1]
         let melInput = melPadded.transposed().expandedDimensions(axis: 0).expandedDimensions(axis: -1)
+        print("DEBUG: RMVPE melInput stats: min \(melInput.min().item(Float.self)), max \(melInput.max().item(Float.self)), shape \(melInput.shape)")
         
         // Run model
         let hidden = self(melInput) // [1, T_padded, 360]
+        print("DEBUG: RMVPE hidden stats: min \(hidden.min().item(Float.self)), max \(hidden.max().item(Float.self)), mean \(hidden.mean().item(Float.self))")
         
         // Take only original n_frames
         let hiddenTrimmed = hidden[0..., 0..<nFrames, 0...]
@@ -709,6 +832,15 @@ class MelSpectrogram {
         return MLXArray(filterbank_data, [n_mels, n_freqs])
     }
     
+    func debug_mel_filterbank() {
+        if mel_filterbank == nil { mel_filterbank = create_mel_filterbank() }
+        let fb = mel_filterbank!
+        print("DEBUG: Mel Filterbank Stats - shape: \(fb.shape), min: \(fb.min().item(Float.self)), max: \(fb.max().item(Float.self)), mean: \(fb.mean().item(Float.self))")
+        // Log first 10 values of first filter
+        let slice = fb[0, 0..<10].asType(Float.self)
+        MLX.eval(slice)
+        print("DEBUG: Mel Filterbank [0, :10]: \(slice.asArray(Float.self))")
+    }
     func create_window() -> MLXArray {
         var win: [Float] = []
         for i in 0..<win_length {
@@ -719,6 +851,7 @@ class MelSpectrogram {
     }
     
     func callAsFunction(_ audio: MLXArray) -> MLXArray {
+        print("DEBUG: MelSpectrogram input audio: min \(audio.min().item(Float.self)), max \(audio.max().item(Float.self))")
         // audio: [T]
         if mel_filterbank == nil { mel_filterbank = create_mel_filterbank() }
         if window == nil { window = create_window() }
@@ -737,6 +870,9 @@ class MelSpectrogram {
         
         let audio_padded = concatenated([leftPad, audio, rightPad], axis: 0)
         
+        print("DEBUG: RMVPE Audio Padded [0...20]: \(audio_padded[0..<20].asArray(Float.self))")
+        print("DEBUG: RMVPE Audio Padded Center [512-10...512+10]: \(audio_padded[502..<522].asArray(Float.self))")
+        
         let len_p = audio_padded.shape[0]
         let num_frames = 1 + (len_p - n_fft) / hop_length
         
@@ -749,6 +885,8 @@ class MelSpectrogram {
         
         let win = window!
         let frames_w = frames * win
+        print("DEBUG: RMVPE Window stats: min \(win.min().item(Float.self)), max \(win.max().item(Float.self)), sum \(win.sum().item(Float.self))")
+        print("DEBUG: RMVPE frames_w stats: min \(frames_w.min().item(Float.self)), max \(frames_w.max().item(Float.self)), mean \(frames_w.mean().item(Float.self))")
         
         // FFT
         // Using MLXFFT.rfft
@@ -756,8 +894,10 @@ class MelSpectrogram {
         
         // Magnitude
         let magnitude = abs(spectrum)
+        print("DEBUG: RMVPE Magnitude stats: min \(magnitude.min().item(Float.self)), max \(magnitude.max().item(Float.self)), mean \(magnitude.mean().item(Float.self))")
         
         let mel = matmul(mel_filterbank!, magnitude.transposed())
+        print("DEBUG: RMVPE Mel (pre-log) stats: min \(mel.min().item(Float.self)), max \(mel.max().item(Float.self)), mean \(mel.mean().item(Float.self))")
         
         let log_mel = MLX.log(maximum(mel, 1e-5))
         
