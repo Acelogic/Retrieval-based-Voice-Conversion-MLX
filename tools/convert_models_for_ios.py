@@ -23,6 +23,43 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from tools.convert_rvc_model import remap_key_name
 
+def fuse_weight_norm(state_dict):
+    """Fuse weight normalization (weight_g, weight_v) into single weight tensor"""
+    fused = {}
+    processed_bases = set()
+
+    for key in list(state_dict.keys()):
+        if key.endswith('.weight_g'):
+            base = key[:-9]  # Remove '.weight_g'
+            v_key = base + '.weight_v'
+
+            if v_key in state_dict:
+                weight_g = state_dict[key]
+                weight_v = state_dict[v_key]
+
+                # Fuse: weight = weight_g * (weight_v / ||weight_v||)
+                # For Conv1d, weight_v shape is [Out, In, K] or similar
+                # Norm is typically computed along dim 0
+                norm = torch.linalg.norm(weight_v, dim=0, keepdim=True)
+                weight_normalized = weight_v / (norm + 1e-12)
+                weight_fused = weight_g * weight_normalized
+
+                fused[base + '.weight'] = weight_fused
+                processed_bases.add(base)
+                print(f"  Fused weight_norm: {key} + {v_key} -> {base}.weight {weight_fused.shape}")
+            else:
+                fused[key] = state_dict[key]
+        elif key.endswith('.weight_v'):
+            base = key[:-9]
+            if base not in processed_bases:
+                # weight_v without weight_g - keep as is
+                fused[key] = state_dict[key]
+        else:
+            fused[key] = state_dict[key]
+
+    return fused
+
+
 def convert_pytorch_to_mlx_safetensors(pytorch_model_path: Path, output_path: Path, model_name: str):
     """Convert PyTorch RVC model to MLX safetensors format"""
 
@@ -43,6 +80,11 @@ def convert_pytorch_to_mlx_safetensors(pytorch_model_path: Path, output_path: Pa
         state_dict = checkpoint
 
     print(f"Loaded {len(state_dict)} tensors from PyTorch")
+
+    # CRITICAL: Fuse weight normalization before conversion
+    print("\nFusing weight normalization...")
+    state_dict = fuse_weight_norm(state_dict)
+    print(f"After fusion: {len(state_dict)} tensors")
 
     # Convert and remap keys
     mlx_weights = {}

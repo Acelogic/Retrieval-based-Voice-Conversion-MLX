@@ -50,18 +50,27 @@ class ResBlock: Module {
         super.init()
     }
 
-    func callAsFunction(_ x: MLXArray) -> MLXArray {
+    func callAsFunction(_ x: MLXArray, debug: Bool = false) -> MLXArray {
         let convs1 = [c1_0, c1_1, c1_2]
         let convs2 = [c2_0, c2_1, c2_2]
 
+        // DEBUG: Check first conv weight
+        if debug {
+            print("DEBUG ResBlock: c1_0.conv.weight shape=\(c1_0.conv.weight.shape), range=[\(c1_0.conv.weight.min().item(Float.self))...\(c1_0.conv.weight.max().item(Float.self))]")
+        }
+
         var out = x
-        for (c1, c2) in zip(convs1, convs2) {
+        for (idx, (c1, c2)) in zip(convs1, convs2).enumerated() {
             var xt = out
             xt = leakyRelu(xt, negativeSlope: LRELU_SLOPE)
+            if debug && idx == 0 { print("DEBUG ResBlock: after lrelu1 range=[\(xt.min().item(Float.self))...\(xt.max().item(Float.self))]") }
             xt = c1(xt)
+            if debug && idx == 0 { print("DEBUG ResBlock: after c1 range=[\(xt.min().item(Float.self))...\(xt.max().item(Float.self))]") }
             xt = leakyRelu(xt, negativeSlope: LRELU_SLOPE)
             xt = c2(xt)
+            if debug && idx == 0 { print("DEBUG ResBlock: after c2 range=[\(xt.min().item(Float.self))...\(xt.max().item(Float.self))]") }
             out = out + xt
+            if debug && idx == 0 { print("DEBUG ResBlock: after residual range=[\(out.min().item(Float.self))...\(out.max().item(Float.self))]") }
         }
         return out
     }
@@ -337,11 +346,13 @@ class Generator: Module {
 
             // MEMORY FIX: Force evaluation after each upsample to prevent graph accumulation
             MLX.eval(out)
+            if i == 0 { print("DEBUG: After up_0: shape=\(out.shape), range=[\(out.min().item(Float.self))...\(out.max().item(Float.self))]") }
 
             // Add NSF Noise
             // noise_conv reduces har_source resolution to match current 'out'
             let noise_conv = noise_convs[i]
             let n = noise_conv(har_source)
+            if i == 0 { print("DEBUG: noise_conv_0 output: shape=\(n.shape), range=[\(n.min().item(Float.self))...\(n.max().item(Float.self))]") }
 
             // Crop if necessary
             if out.shape[1] != n.shape[1] {
@@ -351,12 +362,14 @@ class Generator: Module {
             } else {
                 out = out + n
             }
+            if i == 0 { print("DEBUG: After noise add: range=[\(out.min().item(Float.self))...\(out.max().item(Float.self))]") }
 
             // Multi-ResBlocks
             var xs: MLXArray? = nil
             for _ in 0..<3 { // 3 kernels
                 let res = resblocks[resIdx]
-                let r = res(out)
+                let r = res(out, debug: i == 0 && resIdx == 0)  // Debug only first resblock
+                if i == 0 { print("DEBUG: resblock_\(resIdx) output: range=[\(r.min().item(Float.self))...\(r.max().item(Float.self))]") }
                 if xs == nil { xs = r }
                 else { xs = xs! + r }
                 resIdx += 1
