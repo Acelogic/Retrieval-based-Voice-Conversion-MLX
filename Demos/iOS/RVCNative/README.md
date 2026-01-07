@@ -43,25 +43,37 @@ Built with a **workspace + SPM package** architecture for clean separation betwe
 - ✅ Resolved `BatchNorm` 5D dimension crashes
 - ✅ Input padding (32-multiple) for RMVPE stability
 - ✅ Output length alignment (F0/Phones sync)
-- ✅ **Audio Parity**: ~82% spectrogram correlation with Python MLX reference
+- ✅ **Audio Parity**: ~92% spectrogram correlation with Python MLX reference
 
 ### Audio Parity Status (Python MLX vs Swift MLX)
 
 The Swift implementation achieves high audio parity with the Python MLX reference:
+
+| Model | Correlation | Status |
+|-------|-------------|--------|
+| Drake | 92.9% | ✅ |
+| Juice WRLD | 86.6% | ✅ |
+| Eminem Modern | 94.4% | ✅ |
+| Bob Marley | 93.5% | ✅ |
+| Slim Shady | 91.9% | ✅ |
+| **Average** | **91.8%** | ✅ |
 
 | Component | Status | Notes |
 |-----------|--------|-------|
 | HuBERT | ✅ Exact match | Output features match within floating point precision |
 | RMVPE/F0 | ✅ Exact match | F0 values match within 0.1 Hz |
 | TextEncoder | ✅ Very close | m_p ranges differ by <5% |
-| Flow | ✅ Close | Reverse pass produces similar latents |
-| Generator | ⚠️ ~82% | Spectrogram correlation, waveform differs due to phase |
+| Flow | ✅ Exact match | Reverse pass flip order corrected |
+| Generator | ✅ ~92% | Spectrogram correlation, minor phase differences |
 
 **Key Parity Fixes Applied:**
 1. **Encoder key remapping**: `attn_0` → `attn_layers.0`, `norm1_0` → `norm_layers_1.0`
 2. **ResBlock conv key remapping**: Added `.conv.` prefix for Conv1d wrapper classes
 3. **Weight normalization fusion**: Fused `weight_g`/`weight_v` to single `weight` tensors
 4. **BatchNorm running stats**: Correctly load `runningMean`/`runningVar` for eval mode
+5. **Flow weight key mapping**: Changed from array `flows` to named properties `flow_0`, `flow_1`, etc.
+6. **WaveNet architecture**: Single `cond_layer` at WaveNet level matching Python MLX
+7. **Flow reverse pass order**: Critical fix - flip BEFORE flow in reverse mode (not after)
 
 ### Architecture Highlights
 
@@ -75,7 +87,8 @@ The Swift implementation achieves high audio parity with the Python MLX referenc
 ```swift
 // dec.ups.0 → dec.up_0 (array → named properties)
 // dec.resblocks.X.convs1.Y → dec.resblock_X.c1_Y
-// flow.flows.{0,2,4,6} → flow.flows.{0,1,2,3} (index remapping)
+// flow.flow_0 → flow.flow_0 (direct match with named properties)
+// enc_p.encoder.attn_0 → enc_p.encoder.attn_layers.0
 ```
 
 **Critical Format Fixes**:

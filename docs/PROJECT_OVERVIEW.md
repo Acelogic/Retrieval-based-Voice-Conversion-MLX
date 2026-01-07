@@ -1,13 +1,34 @@
 # RVC MLX - Project Overview
 
-**Last Updated:** 2026-01-06
-**Status:** ✅ **Python MLX Implementation Complete - Production Ready**
+**Last Updated:** 2026-01-07
+**Status:** ✅ **Python MLX & Swift MLX Complete - Production Ready**
 
 ## Objective
 
 Native Apple Silicon (MLX) inference support for RVC (Retrieval-based Voice Conversion) with full PyTorch parity and optimized performance.
 
 ## 🎉 Major Achievements
+
+### 0. ✅ Swift MLX Implementation Complete (2026-01-07)
+
+**Successfully achieved 91.8% average parity between Python MLX and Swift MLX:**
+
+| Model | Correlation | Status |
+|-------|-------------|--------|
+| Drake | 92.9% | ✅ |
+| Juice WRLD | 86.6% | ✅ |
+| Eminem Modern | 94.4% | ✅ |
+| Bob Marley | 93.5% | ✅ |
+| Slim Shady | 91.9% | ✅ |
+| **Average** | **91.8%** | ✅ |
+
+**Critical Fixes Applied:**
+1. **WaveNet Architecture**: Single `cond_layer` at WaveNet level (not per-layer)
+2. **Flow Weight Key Mapping**: Named properties (`flow_0`, `flow_1`) instead of array
+3. **Flow Reverse Pass Order**: Flip BEFORE flow in reverse mode (critical!)
+4. **Last Layer Special Case**: `res_skip_layer_2` outputs `hidden_channels` only
+
+**See:** [MLX_PYTHON_SWIFT_DIFFERENCES.md](MLX_PYTHON_SWIFT_DIFFERENCES.md) for full details
 
 ### 1. ✅ Full RVC Inference Parity (2026-01-06)
 
@@ -289,12 +310,13 @@ Comprehensive debugging scripts in `tools/`:
 
 ## 🚀 Future Work
 
-### High Priority
+### Completed
 
-1. **iOS/Swift Port** (In Progress)
+1. **iOS/Swift Port** ✅ (Complete - 2026-01-07)
    - Port Python MLX implementation to MLX Swift
-   - Target native iOS inference
+   - Achieved 91.8% average parity across 5 models
    - See [IOS_DEVELOPMENT.md](IOS_DEVELOPMENT.md)
+   - See [MLX_PYTHON_SWIFT_DIFFERENCES.md](MLX_PYTHON_SWIFT_DIFFERENCES.md)
 
 2. **Additional Model Testing**
    - Test with 40kHz models
@@ -395,7 +417,7 @@ Comprehensive debugging scripts in `tools/`:
 | **HuBERT** | ✅ Production | Comparable to PT | Exact match |
 | **TextEncoder** | ✅ Production | Comparable to PT | Max diff 0.000018 |
 | **Generator** | ✅ Production | Comparable to PT | Max diff 0.015762 |
-| **iOS/Swift** | ⏳ In Progress | TBD | Debugging |
+| **Swift MLX** | ✅ Production | Native iOS/macOS | 91.8% avg parity |
 
 ## 🤝 Contributing
 
@@ -416,6 +438,6 @@ When porting or modifying:
 
 ---
 
-**Status**: ✅ Python MLX Implementation Complete - Production Ready
-**Last Updated**: 2026-01-06
-**Next Phase**: iOS/Swift Port
+**Status**: ✅ Python MLX & Swift MLX Complete - Production Ready
+**Last Updated**: 2026-01-07
+**Next Phase**: Performance Optimization & Additional Models

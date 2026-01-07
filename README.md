@@ -119,10 +119,37 @@ python benchmarks/benchmark_components.py
 python benchmarks/benchmark_audio_parity.py
 ```
 
+## Swift MLX (iOS/macOS Native)
+
+The project also includes a **native Swift MLX implementation** for iOS and macOS:
+
+### Swift Parity Results
+
+| Model | Correlation | Status |
+|-------|-------------|--------|
+| Drake | 92.9% | ✅ |
+| Juice WRLD | 86.6% | ✅ |
+| Eminem Modern | 94.4% | ✅ |
+| Bob Marley | 93.5% | ✅ |
+| Slim Shady | 91.9% | ✅ |
+| **Average** | **91.8%** | ✅ |
+
+### Swift Implementation Features
+- Native MLX Swift with Metal GPU acceleration
+- Full RVC pipeline: HuBERT → TextEncoder → Flow → Generator
+- RMVPE pitch extraction
+- On-device .pth → .safetensors conversion
+- See: `Demos/iOS/` and `Demos/Mac/`
+
+### Documentation
+- [Swift vs Python MLX Differences](docs/MLX_PYTHON_SWIFT_DIFFERENCES.md)
+- [PyTorch vs Swift MLX Differences](docs/PYTORCH_MLX_SWIFT_DIFFERENCES.md)
+
 ## Conclusion
 
 The MLX implementation is **production-ready** and provides:
-- ✅ **8.71x faster inference** on real-world audio
+- ✅ **8.71x faster inference** on real-world audio (Python MLX)
+- ✅ **91.8% parity** in Swift MLX (iOS/macOS native)
 - ✅ **Perceptually identical output** to PyTorch
 - ✅ **Significantly better memory efficiency**
 - ✅ **Native Apple Silicon optimization**
