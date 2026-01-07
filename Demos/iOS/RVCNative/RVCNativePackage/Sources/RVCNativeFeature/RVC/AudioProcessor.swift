@@ -2,6 +2,7 @@ import Foundation
 import AVFoundation
 import Accelerate
 import MLX
+import MLXNN
 
 final class AudioProcessor: @unchecked Sendable {
     static let shared = AudioProcessor()
@@ -112,5 +113,119 @@ final class AudioProcessor: @unchecked Sendable {
         
         guard let floatData = targetBuffer.floatChannelData?[0] else { return [] }
         return Array(UnsafeBufferPointer(start: floatData, count: Int(targetBuffer.frameLength)))
+    }
+    // MARK: - Volume Envelope (RMS)
+    
+    /// Calculate RMS using Conv1d to match Librosa/Python implementation
+    private func calculateRMS(audio: MLXArray, sampleRate: Int) -> MLXArray {
+        // Python pipeline logic:
+        // frame_length = source_rate // 2 * 2
+        // hop_length = source_rate // 2
+        let frameLength = (sampleRate / 2) * 2
+        let hopLength = sampleRate / 2
+        
+        // 1. Square signal
+        let squared = MLX.square(audio) // [T]
+        
+        // 2. Pad (Reflect/Edge)
+        // Librosa uses centered padding (frameLength // 2 on both sides)
+        // MLX.pad expects [(before, after)] per dimension
+        let padAmount = frameLength / 2
+        // Fix: Use tuple for IntOrPair((pad, pad))
+        let padResult = MLX.padded(squared, widths: [IntOrPair((padAmount, padAmount))], mode: .edge)
+        
+        // 3. Conv1d for Moving Average (Sum then divide)
+        // Input needs to be [N, T, C] -> [1, T_padded, 1]
+        let input = padResult.reshaped([1, -1, 1])
+        
+        // Use MLXNN.Conv1d layer instead of functional default to ensure import availability
+        let conv = MLXNN.Conv1d(
+            inputChannels: 1,
+            outputChannels: 1,
+            kernelSize: frameLength,
+            stride: hopLength,
+            padding: 0,
+            bias: false
+        )
+        
+        // Set weights: 1/N
+        let weightData = [Float](repeating: 1.0 / Float(frameLength), count: frameLength)
+        // MLX Conv1d weight: [Out, K, In]
+        let weight = MLXArray(weightData).reshaped([1, frameLength, 1])
+        conv.update(parameters: ModuleParameters.unflattened(["weight": weight]))
+        
+        let output = conv(input)
+        
+        // 4. Sqrt
+        var rms = MLX.sqrt(output)
+        
+        // Shape [1, Frames, 1] -> [1, Frames]
+        rms = rms.squeezed(axis: 2)
+        
+        return rms
+    }
+    
+    /// Linear Interpolation for RMS curve
+    private func interpolateRMS(rms: MLXArray, targetLength: Int) -> MLXArray {
+        // rms: [1, Frames]
+        let frames = rms.shape[1]
+        
+        if frames == targetLength { return rms }
+        if frames < 2 { return MLX.broadcast(rms, to: [1, targetLength]) }
+        
+        // Generate indices for target grid mapping to source grid
+        // equivalent to np.interp(linspace(0,1,tgt), linspace(0,1,src), y)
+        // This maps 0 -> 0 and (tgt-1) -> (src-1)
+        
+        let range = MLXArray(0..<targetLength).asType(Float.self)
+        let scale = Float(frames - 1) / Float(targetLength - 1)
+        let indices = range * scale
+        
+        let lower = MLX.floor(indices).asType(Int32.self)
+        let upper = MLX.ceil(indices).asType(Int32.self)
+        let weights = indices - lower.asType(Float.self) // Fractional part
+        
+        // Clamp indices
+        let maxIdx = Int32(frames - 1)
+        let lowerClamped = MLX.minimum(MLX.maximum(lower, 0), maxIdx)
+        let upperClamped = MLX.minimum(MLX.maximum(upper, 0), maxIdx)
+        
+        // Gather values: rms[0, lower]
+        // Note: indexing with MLXArray returns a new array
+        let valLower = rms[0, lowerClamped] // [TargetLength]
+        let valUpper = rms[0, upperClamped] // [TargetLength]
+        
+        // Lerp
+        let result = valLower * (1 - weights) + valUpper * weights
+        return result
+    }
+
+    /// Apply Volume Envelope mixing (RMS matching)
+    /// rate: 1.0 = No change (use Model output volume), 0.0 = Match Input Volume fully.
+    /// Usually rate < 1.0 (e.g. 0.25) to mitigate noise in silence.
+    public func changeRMS(sourceAudio: MLXArray, sourceRate: Int, targetAudio: MLXArray, targetRate: Int, rate: Float) -> MLXArray {
+        // RMS calculation
+        let rms1 = calculateRMS(audio: sourceAudio, sampleRate: sourceRate) // [1, Frames1]
+        let rms2 = calculateRMS(audio: targetAudio, sampleRate: targetRate) // [1, Frames2]
+        
+        let targetLength = targetAudio.size
+        
+        // Interpolate to match target audio sample count
+        let rms1Interp = interpolateRMS(rms: rms1, targetLength: targetLength)
+        let rms2Interp = interpolateRMS(rms: rms2, targetLength: targetLength)
+        
+        // Avoid div by zero / neg
+        let rms2Safe = MLX.maximum(rms2Interp, 1e-6)
+        
+        // Formula: target * (rms1^(1-rate) * rms2^(rate-1))
+        // If rate=1: target * 1 * 1 = target (Identity)
+        // If rate=0: target * rms1 / rms2 (Match Source)
+        // If rate=0.25: target * rms1^0.75 * rms2^-0.75 = target * (rms1/rms2)^0.75
+        
+        let p1 = MLX.pow(rms1Interp, 1.0 - rate)
+        let p2 = MLX.pow(rms2Safe, rate - 1.0)
+        let factor = p1 * p2
+        
+        return targetAudio * factor
     }
 }

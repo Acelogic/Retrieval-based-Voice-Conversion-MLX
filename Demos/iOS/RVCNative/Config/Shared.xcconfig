@@ -19,6 +19,8 @@ IPHONEOS_DEPLOYMENT_TARGET = 17.0
 
 // (1 == iPhone, 2 == iPad)
 TARGETED_DEVICE_FAMILY = 1,2 
+SUPPORTED_PLATFORMS = iphoneos iphonesimulator
+SDKROOT = iphoneos 
 
 // ==========================================
 // Info PLIST

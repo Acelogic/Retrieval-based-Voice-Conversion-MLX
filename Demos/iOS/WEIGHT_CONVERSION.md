@@ -11,10 +11,26 @@ The iOS RVC app requires model weights in `.safetensors` format with specific ke
 | Model | Source | Destination |
 |-------|--------|-------------|
 | HuBERT | `hubert_base.safetensors` | `Assets/hubert_base.safetensors` |
-| RVC Synthesizer | RVC `.pth` → converted | `Assets/coder.safetensors` |
+| RVC Synthesizer | `.pth` or `.zip` | Documents Directory (via App Import) |
 | RMVPE | `rmvpe_mlx.npz` | `Assets/rmvpe.safetensors` |
 
 ---
+ 
+ ## Native RVC Conversion (Recommended)
+ 
+ You can now import models directly into the app without manual conversion:
+ 
+ 1. Place your RVC `.pth` model (or a `.zip` containing it) in your iOS Files app.
+ 2. In the app, tap **"Import Model (.safetensors)"** (supports .pth/.zip).
+ 3. Select your file.
+ 4. The app automatically:
+    - Extracts the archive
+    - Parses the Pickle format using a custom Swift VM
+    - Fuses weight normalization layers
+    - Transposes tensors to MLX format
+    - Saves as optimized `.safetensors`
+ 
+ ---
 
 ## RMVPE Weight Conversion
 
