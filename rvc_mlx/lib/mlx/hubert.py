@@ -175,13 +175,17 @@ class HubertModel(nn.Module):
         # input_values: (B, T_samples)
         
         extract_features = self.feature_extractor(input_values)
-        # extract_features = extract_features.transpose(0, 2, 1) # MLX Conv1d returns (N, L, C) already
+        print(f"DEBUG: Hubert Feature Extractor output stats: min {extract_features.min().item():.6f}, max {extract_features.max().item():.6f}, mean {extract_features.mean().item():.6f}")
 
+        # extract_features = extract_features.transpose(0, 2, 1) # MLX Conv1d returns (N, L, C) already
         
         hidden_states = self.feature_projection(extract_features)
+        print(f"DEBUG: Hubert Projection output stats: min {hidden_states.min().item():.6f}, max {hidden_states.max().item():.6f}, mean {hidden_states.mean().item():.6f}")
         
         # Encoder handles pos_embed, norm, dropout, layers
         hidden_states = self.encoder(hidden_states)
+        print(f"DEBUG: Hubert Encoder output stats: min {hidden_states.min().item():.6f}, max {hidden_states.max().item():.6f}, mean {hidden_states.mean().item():.6f}")
+        print(f"DEBUG: HubertModel output shape: {hidden_states.shape}")
         
         # Proj
         if self.config.classifier_proj_size != self.config.hidden_size:

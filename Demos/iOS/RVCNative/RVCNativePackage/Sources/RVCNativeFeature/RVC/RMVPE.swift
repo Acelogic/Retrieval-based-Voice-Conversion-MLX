@@ -89,6 +89,10 @@ class Encoder: Module {
     init(inChannels: Int, inSize: Int, nEncoders: Int, kernelSize: Int, nBlocks: Int, outChannels: Int = 16, momentum: Float = 0.01) {
         self.bn = BatchNorm(featureCount: inChannels, eps: 1e-5, momentum: momentum)
         
+        // DEBUG: Check BatchNorm property names via Mirror
+        let mirror = Mirror(reflecting: self.bn)
+        print("DEBUG: BatchNorm properties: \(mirror.children.map { $0.label })")
+        
         var cIn = inChannels
         var cOut = outChannels
         
@@ -457,9 +461,11 @@ class RMVPE: Module {
         var x = mel
         
         x = unet(x) // [N, T, n_mels, 16]
+        print("DEBUG: RMVPE UNet output stats: min \(x.min().item(Float.self)), max \(x.max().item(Float.self)), mean \(x.mean().item(Float.self))")
         
         // CNN expects [N, H, W, C]
         x = cnn(x) // [N, T, n_mels, 3]
+        print("DEBUG: RMVPE CNN output stats: min \(x.min().item(Float.self)), max \(x.max().item(Float.self)), mean \(x.mean().item(Float.self))")
         
         // Reshape for GRU: [N, T, n_mels * 3]
         // CRITICAL: Transpose to [N, T, 3, n_mels] BEFORE flattening to match Python!
@@ -471,7 +477,11 @@ class RMVPE: Module {
         x = x.reshaped([B, T, -1])
         
         x = bigru(x) // [N, T, 512]
+        print("DEBUG: RMVPE BiGRU output stats: min \(x.min().item(Float.self)), max \(x.max().item(Float.self)), mean \(x.mean().item(Float.self))")
+        
         x = linear(x) // [N, T, 360]
+        print("DEBUG: RMVPE Linear output stats: min \(x.min().item(Float.self)), max \(x.max().item(Float.self)), mean \(x.mean().item(Float.self))")
+        
         x = dropout(x)
         x = sigmoid(x)
         
@@ -678,6 +688,9 @@ class MelSpectrogram {
             let center = hz_points[i+1]
             let right = hz_points[i+2]
             
+            // Slaney normalization: 2.0 / (frequencies[i+2] - frequencies[i])
+            let norm = 2.0 / (right - left)
+            
             for j in 0..<n_freqs {
                 let f = freq_bins[j]
                 var val: Float = 0
@@ -688,7 +701,8 @@ class MelSpectrogram {
                     val = (right - f) / (right - center + 1e-10)
                 }
                 
-                filterbank_data[i * n_freqs + j] = val
+                // Apply normalization
+                filterbank_data[i * n_freqs + j] = val * norm
             }
         }
         
@@ -746,6 +760,18 @@ class MelSpectrogram {
         let mel = matmul(mel_filterbank!, magnitude.transposed())
         
         let log_mel = MLX.log(maximum(mel, 1e-5))
+        
+        let melMin = log_mel.min().item(Float.self)
+        let melMax = log_mel.max().item(Float.self)
+        let melMean = log_mel.mean().item(Float.self)
+        print("DEBUG: Mel Spectrogram Stats: min \(melMin), max \(melMax), mean \(melMean), shape \(log_mel.shape)")
+        
+        // Log first frame (column 0), first 10 bins (rows 0-9)
+        // log_mel shape is [128, T]
+        let slice = log_mel[0..<10, 0].asType(Float.self)
+        MLX.eval(slice)
+        let sliceArr = slice.asArray(Float.self)
+        print("DEBUG: Mel[0, :10]: \(sliceArr)")
         
         return log_mel
     }

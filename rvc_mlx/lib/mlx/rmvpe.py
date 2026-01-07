@@ -242,7 +242,11 @@ class E2E(nn.Module):
 
     def __call__(self, x):
         x = self.unet(x)
+        print(f"DEBUG: RMVPE UNet output stats: min {x.min().item():.6f}, max {x.max().item():.6f}, mean {x.mean().item():.6f}")
+
         x = self.cnn(x)
+        print(f"DEBUG: RMVPE CNN output stats: min {x.min().item():.6f}, max {x.max().item():.6f}, mean {x.mean().item():.6f}")
+
         x = x.transpose(0, 1, 3, 2)
         B, T, C, M = x.shape
         x = x.reshape(B, T, C * M)
@@ -310,6 +314,17 @@ class RMVPE0Predictor:
         
         mel = self._mel_filterbank @ magnitude
         log_mel = np.log(np.maximum(mel, 1e-5))
+        
+        print(f"DEBUG: Mel Spectrogram Stats: min {log_mel.min():.6f}, max {log_mel.max():.6f}, mean {log_mel.mean():.6f}, shape {log_mel.shape}")
+        
+        # Log first frame, first 10 bins
+        mel_slice = log_mel[:10, 0] # (K, T) -> slice first 10 freqs of 0th frame?
+        # check shape: (128, T)
+        # So first frame is [:, 0] which is (128,)
+        # First 10 bins: [:10, 0]
+        slice_print = [f"{x:.4f}" for x in log_mel[:10, 0]]
+        print(f"DEBUG: Mel[0, :10]: [{', '.join(slice_print)}]")
+        
         return mx.array(log_mel)
 
     def mel2hidden(self, mel):

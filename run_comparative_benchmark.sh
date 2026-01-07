@@ -16,7 +16,7 @@ RMVPE_SOURCE="rvc/models/predictors/rmvpe.pt"
 PRIORITY_MODELS=("Drake" "Juice WRLD (RVC v2) 310 Epochs" "Eminem Modern" "Bob Marley (RVC v2) (500 Epochs) RMVPE" "Slim_Shady_New")
 
 # Input Audio (The sole source of truth)
-INPUT_AUDIO="${TEST_AUDIO_DIR}/coder_audio_stock.wav"
+INPUT_AUDIO="${TEST_AUDIO_DIR}/input_16k.wav"
 
 # Asset paths
 HUBERT_PATH="${IOS_ASSETS_DIR}/hubert_base.safetensors"
