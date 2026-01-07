@@ -52,6 +52,10 @@ import MLXNN
             // Note: The Python conversion script already transposes all weights to MLX format
             // No additional transposition needed here!
             log("RVCInference: Loaded \(modelWeights.count) weights (already in MLX format)")
+
+            // DEBUG: Print all dec.* keys to understand weight naming
+            let decKeys = modelWeights.keys.filter { $0.hasPrefix("dec.") }.sorted()
+            log("RVCInference: Generator weight keys: \(decKeys.prefix(20))...")  // Show first 20
             
             // Initialize Synthesizer (V2 defaults)
             self.synthesizer = Synthesizer(
@@ -74,10 +78,46 @@ import MLXNN
             // dec.* -> Generator
             // flow.flows.0, 2, 4, 6 -> Flow (indices 0, 1, 2, 3)
             // emb_g.weight -> Speaker Embedding
-            
+
+            // Helper: Check if a key needs .conv inserted (for Conv1d wrapper classes)
+            func needsConvInsertion(_ key: String) -> Bool {
+                // Generator Conv1d wrappers (NOT ConvTranspose1d - now using native)
+                if key.hasPrefix("dec.conv_pre.") || key.hasPrefix("dec.conv_post.") { return true }
+                // dec.up_* uses native ConvTransposed1d, no .conv wrapper
+                if key.contains("dec.noise_conv_") { return true }
+                if key.contains("dec.resblock_") && (key.contains(".c1_") || key.contains(".c2_")) { return true }
+                return false
+            }
+
+            // Helper: Check if this is a ConvTranspose1d weight that needs kernel flip
+            // Handle both naming conventions: dec.up_0.weight OR dec.ups.0.weight
+            func isConvTransposeWeight(_ key: String) -> Bool {
+                let isUpWeight = (key.contains("dec.up_") || key.contains("dec.ups.")) && key.hasSuffix(".weight")
+                return isUpWeight
+            }
+
             var synthParams: [String: MLXArray] = [:]
             for (k, v) in modelWeights {
                 var newK = k
+                var newV = v
+
+                // 1. Remap PyTorch-style Generator keys to match Swift structure
+                // dec.ups.X -> dec.up_X
+                if newK.contains("dec.ups.") {
+                    newK = newK.replacingOccurrences(of: "dec.ups.", with: "dec.up_")
+                }
+                // dec.noise_convs.X -> dec.noise_conv_X
+                if newK.contains("dec.noise_convs.") {
+                    newK = newK.replacingOccurrences(of: "dec.noise_convs.", with: "dec.noise_conv_")
+                }
+                // dec.resblocks.X.convs1.Y -> dec.resblock_X.c1_Y
+                if newK.contains("dec.resblocks.") {
+                    newK = newK.replacingOccurrences(of: "dec.resblocks.", with: "dec.resblock_")
+                    newK = newK.replacingOccurrences(of: ".convs1.", with: ".c1_")
+                    newK = newK.replacingOccurrences(of: ".convs2.", with: ".c2_")
+                }
+
+                // 2. Flow index remapping
                 if k.hasPrefix("flow.flows.") {
                     let parts = k.components(separatedBy: ".")
                     if parts.count >= 3, let oldIdx = Int(parts[2]) {
@@ -87,10 +127,28 @@ import MLXNN
                         newK = (["flow", "flows", String(newIdx)] + parts.dropFirst(3)).joined(separator: ".")
                     }
                 }
-                synthParams[newK] = v
+
+                // 3. DON'T flip kernel - the conversion script already handled transposition
+                // Testing: The manual ConvTranspose1d implementation might not need kernel flip
+                // if isConvTransposeWeight(k) && newV.ndim == 3 {
+                //     newV = newV[0..., .stride(by: -1), 0...]
+                //     log("RVCInference: Flipped kernel for \(k)")
+                // }
+
+                // 4. Insert .conv for Conv1d wrapper classes in Generator
+                if needsConvInsertion(newK) {
+                    if newK.hasSuffix(".weight") {
+                        newK = String(newK.dropLast(7)) + ".conv.weight"
+                    } else if newK.hasSuffix(".bias") {
+                        newK = String(newK.dropLast(5)) + ".conv.bias"
+                    }
+                }
+
+                synthParams[newK] = newV
             }
-            
+
             self.synthesizer?.update(parameters: ModuleParameters.unflattened(synthParams))
+            self.synthesizer?.train(false)  // CRITICAL: Set to eval mode (disables Dropout, uses BatchNorm running stats)
             log("RVCInference: Loaded Synthesizer with \(synthParams.count) weight keys")
             
             // 3. Load RMVPE (Optional)
@@ -101,6 +159,7 @@ import MLXNN
                     self.rmvpe = RMVPE()
                     
                     self.rmvpe?.update(parameters: ModuleParameters.unflattened(rmvpeWeights))
+                    self.rmvpe?.train(false)  // CRITICAL: Set to eval mode for correct inference
                     log("RVCInference: Loaded RMVPE weights: \(rmvpeWeights.count) keys")
                 } catch {
                     log("RVCInference: Failed to load RMVPE: \(error). Using fallback F0.")
@@ -109,6 +168,9 @@ import MLXNN
             } else {
                 log("RVCInference: No RMVPE URL provided. Using fallback F0.")
             }
+            
+            // Also set HuBERT to eval mode
+            self.hubertModel?.train(false)
             
             DispatchQueue.main.async { self.status = "Models Loaded" }
         }
@@ -122,95 +184,49 @@ import MLXNN
                 // audioArray: [TotalSamples]
                 
                 let totalSamples = audioArray.size
-                // 3 seconds chunk size (Safe for mobile memory)
-                // 16000 * 3 = 48000. 48000 % 320 == 0.
-                let chunkSize = 16000 * 3
-                let padSamples = 16000 // 1 second context padding
+                log("RVCInference: Processing \(totalSamples) samples (\(Float(totalSamples)/16000.0)s at 16kHz)")
                 
-                // Pad input audio globally to handle edges (Simulate Reflection/Edge padding)
-                // MLX.padded with .edge mode
-                let audioArrayPadded = MLX.padded(audioArray, widths: [IntOrPair((padSamples, padSamples))], mode: .edge)
+                DispatchQueue.main.async { self.status = "Processing..." }
                 
-                log("RVCInference: Starting chunked inference. Total samples: \(totalSamples). Chunk size: \(chunkSize). Padding: \(padSamples)")
-                
-                var outputChunks: [MLXArray] = []
-                var currentPos = 0
-                var chunkIdx = 0
-                
-                while currentPos < totalSamples {
-                    chunkIdx += 1
-                    log("RVCInference: Processing chunk \(chunkIdx)... (Original: \(currentPos)-\(min(currentPos+chunkSize, totalSamples)))")
-                    DispatchQueue.main.async { self.status = "Chunk \(chunkIdx)..." }
-                    
-                    // Calculate positions in the PADDED array
-                    let startIndexPadded = currentPos // Already offset by padSamples due to prepending
-                    let endIndexPadded = startIndexPadded + chunkSize + (2 * padSamples) // Include pre and post padding
-                    
-                    // Clamp end if necessary
-                    let actualEndPadded = min(endIndexPadded, audioArrayPadded.size)
-                    
-                    // Extract padded chunk
-                    let paddedChunk = audioArrayPadded[startIndexPadded..<actualEndPadded]
-                    
-                    // Process chunk
-                    let processedPaddedChunk = try await inferChunk(chunk: paddedChunk)
-                    
-                    // Calculate crop indices.
-                    // The processedPaddedChunk has audio for padded+core+padded samples input.
-                    // Each input sample roughly maps to `targetSR / sourceSR` output samples.
-                    // Here source is 16kHz hubert, target is 40kHz audio.
-                    // Actually, the hop size relationship is complex. Simpler: samples_per_feature.
-                    // Let's assume output length is proportional to input length.
-                    // The output for the core `chunkSize` samples is in the middle.
-                    
-                    // Output conversion: 16kHz input, 40kHz output. Ratio = 2.5.
-                    // No, the HuBERT processes at 16kHz, conv_pre hop is 320 = 20ms@16kHz.
-                    // Generator upsamples by 400x from features (10*10*2*2 = 400).
-                    // So if feature length is F, audio length is F * 400.
-                    // Hubert stride is 320, so AudioLen / 320 ~= FeatureLen.
-                    // Combined: OutputAudio = (InputAudio / 320) * 400 = InputAudio * 1.25
-                    // 16000 samples -> 16000 * 1.25 = 20000? No that doesn't seem right for 16k to 40k conversion it should be 2.5x.
-                    // The model is trained for 40k output. Hubert is at 16k.
-                    // Input 16k samples -> Features. Features * 400 upsample -> Output samples @ 40k.
-                    // Let's check: 1 second audio at 16kHz = 16000 samples. HuBERT stride 320 -> 50 features.
-                    // Features upsampled 2x in pipeline, then generator x400. So 50 * 2 * 400 = 40000 output samples.
-                    // That's 40k samples for 1 second, i.e., 40kHz output. Correct!
-                    // So output length is input_samples * (40000/16000) = input * 2.5
-                    
-                    let outputRatio: Float = 40000.0 / 16000.0 // = 2.5
-                    
-                    // We need to crop padSamples worth of audio from each end.
-                    let cropOutputSamples = Int(Float(padSamples) * outputRatio)
-                    
-                    let processedLen = processedPaddedChunk.shape[1] // Assuming [B, L, 1]
-                    let coreStartIdx = cropOutputSamples
-                    var coreEndIdx = processedLen - cropOutputSamples
-                    
-                    // Handle edge cases for last chunk
-                    if coreEndIdx <= coreStartIdx {
-                        // Chunk too small, take whatever we got. This is edge case.
-                        coreEndIdx = processedLen
-                    }
-                    
-                    let coreOutput = processedPaddedChunk[0..., coreStartIdx..<coreEndIdx, 0...]
-                    outputChunks.append(coreOutput.squeezed(axes: [0, 2])) // [L]
-                    
-                    // Aggressive memory release each chunk
-                    MLX.eval(coreOutput)
-                    MLX.Memory.clearCache()
-                    
-                    currentPos += chunkSize
+                // Process entire audio in one pass (simpler, avoids chunk boundary artifacts)
+                // For iOS memory constraints, we limit to ~30s audio for now
+                let maxSamples = 16000 * 30  // 30 seconds at 16kHz
+                var audioToProcess = audioArray
+                if totalSamples > maxSamples {
+                    log("RVCInference: Audio too long (\(totalSamples) samples), truncating to \(maxSamples)")
+                    audioToProcess = audioArray[0..<maxSamples]
                 }
                 
-                DispatchQueue.main.async { self.status = "Finalizing..." }
+                // Add small edge padding for model context (0.1s each side)
+                let padSamples = 1600  // 0.1 seconds
+                let audioPadded = MLX.padded(audioToProcess, widths: [IntOrPair((padSamples, padSamples))], mode: .edge)
                 
-                // Concatenate all output chunks
-                let finalOutput = MLX.concatenated(outputChunks, axis: 0) // [TotalOutputSamples]
+                // Run inference on full audio
+                let outputPadded = try await inferChunk(chunk: audioPadded)
+                MLX.eval(outputPadded)
+                
+                // Calculate crop to remove padding from output
+                // Input is at 16kHz, output is at 40kHz (2.5x ratio)
+                let outputRatio: Float = 40000.0 / 16000.0
+                let cropSamples = Int(Float(padSamples) * outputRatio)
+                
+                let outputLen = outputPadded.shape[1]
+                let coreStart = cropSamples
+                let coreEnd = outputLen - cropSamples
+                
+                var finalOutput: MLXArray
+                if coreEnd > coreStart {
+                    finalOutput = outputPadded[0..., coreStart..<coreEnd, 0...].squeezed(axes: [0, 2])
+                } else {
+                    // Fallback if output is too short
+                    finalOutput = outputPadded.squeezed(axes: [0, 2])
+                }
+                
                 MLX.eval(finalOutput)
                 
                 let outputSampleRate: Double = 40000.0 // Standard RVC V2 output
                 
-                log("RVCInference: Saving output to \(outputURL.path)")
+                log("RVCInference: Saving \(finalOutput.size) samples to \(outputURL.path)")
                 try AudioProcessor.shared.saveAudio(array: finalOutput, url: outputURL, sampleRate: outputSampleRate)
                 
                 log("RVCInference: Done!")
@@ -232,6 +248,7 @@ import MLXNN
             }
             let hubertFeatures = hubertModel(audioInput) // [1, Frames, 768]
             MLX.eval(hubertFeatures)
+            MLX.Memory.clearCache()  // MEMORY FIX: Clear after HuBERT
             log("DEBUG: HuBERT output shape: \(hubertFeatures.shape)")
 
             // 2. F0 Estimation (16kHz -> 100fps)
@@ -245,6 +262,7 @@ import MLXNN
                 f0 = MLX.full([1, frames, 1], values: MLXArray(200.0))
             }
             MLX.eval(f0)
+            MLX.Memory.clearCache()  // MEMORY FIX: Clear after RMVPE
             
             // 3. Upsample Hubert Features to match F0 (100fps)
             let N = hubertFeatures.shape[0]
