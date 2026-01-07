@@ -28,53 +28,72 @@ public final class PthConverter: Sendable {
         
         try fm.unzipItem(at: url, to: tempDir)
         
-        // 2. Read data.pkl
-        progress?(0.1, "Locating data...")
-        // PyTorch zip normally has 'archive/data.pkl' or just 'data.pkl' depending on base
-        // Let's find data.pkl
+        // 2. Inspect Archive & Locate data.pkl
+        progress?(0.1, "Inspecting archive structure...")
+        
         var dataPklUrl: URL?
         var storageRoot: URL = tempDir
+        var modelFiles: [URL] = []
         
-        let fileManager = FileManager.default
-        let enumerator = fileManager.enumerator(at: tempDir, includingPropertiesForKeys: nil)
-        
-        var foundPthInside: URL?
-        
-        if let enumerator = enumerator {
+        // Log all files for transparency
+        if let enumerator = fm.enumerator(at: tempDir, includingPropertiesForKeys: [.isRegularFileKey]) {
+            print("--- Archive Structure ---")
             for case let fileURL as URL in enumerator {
+                let relPath = fileURL.path.replacingOccurrences(of: tempDir.path, with: "")
+                print("  [File] \(relPath)")
+                
                 if fileURL.lastPathComponent == "data.pkl" {
-                    dataPklUrl = fileURL
-                    storageRoot = fileURL.deletingLastPathComponent()
-                    break
-                }
-                if fileURL.pathExtension.lowercased() == "pth" {
-                    foundPthInside = fileURL
+                    modelFiles.append(fileURL)
+                } else if fileURL.pathExtension.lowercased() == "pth" {
+                    modelFiles.append(fileURL)
                 }
             }
+            print("-------------------------")
         }
         
-        // If no data.pkl, checking if there is a nested .pth (zip inside zip)
-        if dataPklUrl == nil, let pth = foundPthInside {
-            progress?(0.15, "Extracting nested archive...")
-            print("Found nested .pth at \(pth.path), extracting...")
-            // Create a sub temp dir for the nested pth
-            let nestedTemp = tempDir.appendingPathComponent("nested_pth")
-            try fileManager.createDirectory(at: nestedTemp, withIntermediateDirectories: true)
-            try fileManager.unzipItem(at: pth, to: nestedTemp)
+        // Helper to find data.pkl in a model URL (might be a directory or a .pth zip)
+        func findDataPkl(in root: URL) -> (URL, URL)? {
+            if root.lastPathComponent == "data.pkl" {
+                return (root, root.deletingLastPathComponent())
+            }
             
-            // Search again in nested
-            if let nestedEnum = fileManager.enumerator(at: nestedTemp, includingPropertiesForKeys: nil) {
-                for case let f as URL in nestedEnum {
-                    if f.lastPathComponent == "data.pkl" {
-                        dataPklUrl = f
-                        storageRoot = f.deletingLastPathComponent()
-                        break
+            // If it's a .pth file, it's actually a zip. Extract it!
+            if root.pathExtension.lowercased() == "pth" {
+                let nestedTemp = root.deletingLastPathComponent().appendingPathComponent("extracted_\(root.lastPathComponent)")
+                do {
+                    try fm.createDirectory(at: nestedTemp, withIntermediateDirectories: true)
+                    try fm.unzipItem(at: root, to: nestedTemp)
+                    
+                    if let nestedEnum = fm.enumerator(at: nestedTemp, includingPropertiesForKeys: nil) {
+                        for case let f as URL in nestedEnum {
+                            if f.lastPathComponent == "data.pkl" {
+                                return (f, f.deletingLastPathComponent())
+                            }
+                        }
                     }
+                } catch {
+                    print("Failed to extract nested .pth: \(error)")
                 }
+            }
+            return nil
+        }
+        
+        // Pick the best candidate
+        if let first = modelFiles.first {
+            if modelFiles.count > 1 {
+                print("Warning: Multiple model candidates found. Picking: \(first.lastPathComponent)")
+            }
+            
+            if let found = findDataPkl(in: first) {
+                dataPklUrl = found.0
+                storageRoot = found.1
+                progress?(0.15, "Using model: \(first.lastPathComponent)")
             }
         }
         
-        guard let pklUrl = dataPklUrl else { throw PthConversionError.zipFailed }
+        guard let pklUrl = dataPklUrl else {
+            throw PthConversionError.conversionFailed("No valid model (.pth or data.pkl) found in archive.")
+        }
         
         // 3. Unpickle
         progress?(0.2, "Parsing Pickle structure...")
