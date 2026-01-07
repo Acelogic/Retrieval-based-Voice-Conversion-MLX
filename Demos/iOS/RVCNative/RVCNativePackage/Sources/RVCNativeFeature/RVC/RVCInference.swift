@@ -175,7 +175,7 @@ import MLXNN
             DispatchQueue.main.async { self.status = "Models Loaded" }
         }
         
-        public func infer(audioURL: URL, outputURL: URL) async {
+        public func infer(audioURL: URL, outputURL: URL, volumeEnvelope: Float = 1.0) async {
             do {
                 DispatchQueue.main.async { self.status = "Loading Audio..." }
                 
@@ -225,6 +225,20 @@ import MLXNN
                 MLX.eval(finalOutput)
                 
                 let outputSampleRate: Double = 40000.0 // Standard RVC V2 output
+                
+                // Volume Envelope Mixing
+                if volumeEnvelope != 1.0 {
+                    log("RVCInference: Applying Volume Envelope (rate: \(volumeEnvelope))")
+                    // sourceRate is 16000 (from loadAudio default)
+                    // targetRate is 40000
+                    finalOutput = AudioProcessor.shared.changeRMS(
+                        sourceAudio: audioToProcess,
+                        sourceRate: 16000,
+                        targetAudio: finalOutput,
+                        targetRate: Int(outputSampleRate),
+                        rate: volumeEnvelope
+                    )
+                }
                 
                 log("RVCInference: Saving \(finalOutput.size) samples to \(outputURL.path)")
                 try AudioProcessor.shared.saveAudio(array: finalOutput, url: outputURL, sampleRate: outputSampleRate)

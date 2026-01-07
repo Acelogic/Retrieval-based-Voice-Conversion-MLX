@@ -11,6 +11,10 @@ Built with a **workspace + SPM package** architecture for clean separation betwe
 - **Audio Input Options**:
   - Import audio files from Files app
   - Record audio directly in-app using device microphone
+- **Custom Model Import**:
+  - **Native .pth Conversion**: Convert standard PyTorch RVC models directly on-device
+  - **Zip Support**: Import .zip archives containing models
+  - **Auto-Conversion**: Automatically converts to MLX-optimized `.safetensors` format
 - **Playback Controls**: Play original and converted audio with visual feedback
 - **Waveform Visualization**: Real-time comparison of original vs converted audio waveforms
 - **Model Components**:
@@ -31,6 +35,9 @@ Built with a **workspace + SPM package** architecture for clean separation betwe
 - ✅ Waveform visualization UI
 - ✅ Audio recording and playback
 - ✅ Model management and switching
+- ✅ Native .pth -> .safetensors converter (Pure Swift)
+- ✅ Volume Envelope (RMS mixing) for noise reduction
+- ✅ Nested Zip file handling for imports
 
 ### Architecture Highlights
 

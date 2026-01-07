@@ -5,7 +5,7 @@ import PackageDescription
 
 let package = Package(
     name: "RVCNativeFeature",
-    platforms: [.iOS(.v17), .macOS(.v14)],
+    platforms: [.iOS(.v17)],
     products: [
         // Products define the executables and libraries a package produces, making them visible to other packages.
         .library(
@@ -15,7 +15,8 @@ let package = Package(
         ),
     ],
     dependencies: [
-        .package(path: "../Vendor/mlx-swift")
+        .package(path: "../Vendor/mlx-swift"),
+        .package(url: "https://github.com/weichsel/ZIPFoundation.git", .upToNextMajor(from: "0.9.0"))
     ],
     targets: [
         // Targets are the basic building blocks of a package, defining a module or a test suite.
@@ -32,6 +33,7 @@ let package = Package(
                 .product(name: "MLXNN", package: "mlx-swift"),
                 .product(name: "MLXRandom", package: "mlx-swift"),
                 .product(name: "MLXFFT", package: "mlx-swift"),
+                .product(name: "ZIPFoundation", package: "ZIPFoundation"),
             ],
             resources: [
                 .copy("Assets")
