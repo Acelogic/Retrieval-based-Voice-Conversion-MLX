@@ -197,18 +197,9 @@ final class PickleUnpickler {
                     }
                     list.add(value)
                     
-                case APPENDS:
-                    var items: [Any] = []
-                    while true {
-                        let top = stack.popLast()
-                        if top is Mark { break }
-                        guard let value = top else { throw PickleError.stackUnderflow }
-                        items.append(value)
-                    }
-                    // List is below mark
-                    guard var list = stack.popLast() as? [Any] else { throw PickleError.invalidStructure }
-                    list.append(contentsOf: items.reversed())
-                    stack.append(list)
+                case BINFLOAT:
+                    let val = try readFloat64()
+                    stack.append(val)
                     
                 case BUILD:
                     // Build object state
@@ -329,6 +320,12 @@ final class PickleUnpickler {
         position += count
         guard let str = String(data: sub, encoding: .utf8) else { throw PickleError.invalidStructure }
         return str
+    }
+    
+    private func readFloat64() throws -> Double {
+        let val = data.subdata(in: position..<position+8).withUnsafeBytes { $0.load(as: Double.self) }
+        position += 8
+        return val
     }
     
     private func buildTuple(opcode: UInt8) throws {
