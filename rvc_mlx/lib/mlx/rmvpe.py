@@ -129,9 +129,13 @@ class Encoder(nn.Module):
 
     def __call__(self, x):
         x = self.bn(x)
+        print(f"DEBUG RMVPE Encoder: After input BN - min {x.min().item():.6f}, max {x.max().item():.6f}, mean {x.mean().item():.6f}")
         concat_tensors = []
-        for layer in self.layers:
+        for idx, layer in enumerate(self.layers):
             t, x = layer(x)
+            print(f"DEBUG RMVPE Encoder: Layer {idx} output - min {t.min().item():.6f}, max {t.max().item():.6f}, mean {t.mean().item():.6f}")
+            if x is not None:
+                print(f"DEBUG RMVPE Encoder: Layer {idx} pooled - min {x.min().item():.6f}, max {x.max().item():.6f}, mean {x.mean().item():.6f}")
             concat_tensors.append(t)
         return x, concat_tensors
 

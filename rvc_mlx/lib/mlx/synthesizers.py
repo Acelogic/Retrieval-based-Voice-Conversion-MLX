@@ -101,7 +101,9 @@ class Synthesizer(nn.Module):
 
         # Expanding m_p with noise
         # m_p: (B, C, T), x_mask: (B, 1, T) - broadcasts correctly
-        z_p = (m_p + mx.exp(logs_p) * mx.random.normal(m_p.shape).astype(m_p.dtype) * 0.66666) * x_mask
+        z_p = (m_p + mx.exp(logs_p) * mx.random.normal(m_p.shape).astype(m_p.dtype) * 0.0) * x_mask
+        print(f"DEBUG: TextEncoder output - m_p: {m_p.shape} [{m_p.min().item():.6f}...{m_p.max().item():.6f}], logs_p: {logs_p.shape} [{logs_p.min().item():.6f}...{logs_p.max().item():.6f}], x_mask: {x_mask.shape}")
+        print(f"DEBUG: z_p shape: {z_p.shape}, stats: min {z_p.min().item():.6f}, max {z_p.max().item():.6f}")
 
         # Rate / time stretching
         if rate is not None:
