@@ -299,6 +299,35 @@ import MLXNN
             let pitchFinal = pitchBuckets[0..., 0..<p_len_val]
             let phoneLengths = MLXArray([Int32(p_len_val)])
             
+            // LOGGING FOR PARITY CHECK: Dump first 20 values of inputs
+            if true { // Always log for debug
+                log("DEBUG DATA DUMP:")
+                
+                // 1. F0 (Raw Hz)
+                let f0Data = nsff0.asType(Float.self)[0..., 0..<min(20, p_len_val), 0]
+                var f0Str = "F0 (First 20): ["
+                for i in 0..<f0Data.shape[0] {
+                     f0Str += String(format: "%.4f, ", f0Data[i].item(Float.self))
+                }
+                log(f0Str + "]")
+                
+                // 2. Pitch (Buckets)
+                let pitchData = pitchFinal.asType(Int32.self)[0, 0..<min(20, p_len_val)]
+                var pitchStr = "Pitch (First 20): ["
+                 for i in 0..<pitchData.shape[0] {
+                     pitchStr += String(format: "%d, ", pitchData[i].item(Int32.self))
+                }
+                log(pitchStr + "]")
+                
+                // 3. Phone (First feature of first 20 frames)
+                let phoneData = phone[0, 0..<min(20, p_len_val), 0]
+                var phoneStr = "Phone[0] (First 20): ["
+                for i in 0..<phoneData.shape[0] {
+                     phoneStr += String(format: "%.4f, ", phoneData[i].item(Float.self))
+                }
+                log(phoneStr + "]")
+            }
+            
             // 6. Synthesizer Inference
             guard let synthesizer = synthesizer else {
                 throw NSError(domain: "RVCInference", code: 1, userInfo: [NSLocalizedDescriptionKey: "Synthesizer missing"])

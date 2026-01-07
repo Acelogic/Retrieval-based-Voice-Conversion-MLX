@@ -4,6 +4,118 @@ import AVFoundation
 import RVCNativeFeature
 import UniformTypeIdentifiers
 
+// MARK: - Waveform View Component
+struct WaveformView: View {
+    let samples: [Float]
+    let color: Color
+    let label: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label)
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            GeometryReader { geometry in
+                let width = geometry.size.width
+                let height = geometry.size.height
+                let midY = height / 2
+
+                Path { path in
+                    guard !samples.isEmpty else { return }
+
+                    // Downsample to fit the view width
+                    let pointCount = Int(width)
+                    let samplesPerPoint = max(1, samples.count / pointCount)
+
+                    for i in 0..<pointCount {
+                        let startIdx = i * samplesPerPoint
+                        let endIdx = min(startIdx + samplesPerPoint, samples.count)
+
+                        guard startIdx < samples.count else { break }
+
+                        // Get min/max for this segment
+                        let segment = samples[startIdx..<endIdx]
+                        let minVal = segment.min() ?? 0
+                        let maxVal = segment.max() ?? 0
+
+                        let x = CGFloat(i)
+                        let topY = midY - CGFloat(maxVal) * midY * 0.9
+                        let bottomY = midY - CGFloat(minVal) * midY * 0.9
+
+                        path.move(to: CGPoint(x: x, y: topY))
+                        path.addLine(to: CGPoint(x: x, y: bottomY))
+                    }
+                }
+                .stroke(color, lineWidth: 1)
+
+                // Center line
+                Path { path in
+                    path.move(to: CGPoint(x: 0, y: midY))
+                    path.addLine(to: CGPoint(x: width, y: midY))
+                }
+                .stroke(color.opacity(0.3), lineWidth: 0.5)
+            }
+        }
+        .frame(height: 60)
+    }
+}
+
+// MARK: - Waveform Comparison View
+struct WaveformComparisonView: View {
+    let originalSamples: [Float]
+    let convertedSamples: [Float]
+
+    var body: some View {
+        VStack(spacing: 8) {
+            Text("Waveform Comparison")
+                .font(.headline)
+
+            WaveformView(samples: originalSamples, color: .blue, label: "Original")
+            WaveformView(samples: convertedSamples, color: .green, label: "Converted")
+        }
+        .padding()
+        .background(Color(.systemGray6))
+        .cornerRadius(12)
+    }
+}
+
+// MARK: - Audio Waveform Extractor
+struct AudioWaveformExtractor {
+    static func extractSamples(from url: URL, maxSamples: Int = 4000) -> [Float] {
+        guard let file = try? AVAudioFile(forReading: url) else {
+            return []
+        }
+
+        let format = file.processingFormat
+        let frameCount = AVAudioFrameCount(file.length)
+
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
+            return []
+        }
+
+        do {
+            try file.read(into: buffer)
+        } catch {
+            return []
+        }
+
+        guard let channelData = buffer.floatChannelData else {
+            return []
+        }
+
+        let samples = Array(UnsafeBufferPointer(start: channelData[0], count: Int(buffer.frameLength)))
+
+        // Downsample if too many samples
+        if samples.count <= maxSamples {
+            return samples
+        }
+
+        let step = samples.count / maxSamples
+        return stride(from: 0, to: samples.count, by: step).map { samples[$0] }
+    }
+}
+
 struct ContentView: View {
     @State private var selectedModel: String = "Select Model"
     @State private var statusMessage: String = "Ready"
@@ -20,7 +132,11 @@ struct ContentView: View {
     
     @State private var inputURL: URL?
     @State private var outputURL: URL?
-    
+
+    // Waveform samples for visualization
+    @State private var originalWaveform: [Float] = []
+    @State private var convertedWaveform: [Float] = []
+
     // Quick Demo File
     let demoAudioURL = RVCInference.bundle.url(forResource: "demo", withExtension: "wav")
 
@@ -147,7 +263,7 @@ struct ContentView: View {
                 Divider()
                 Text("Result")
                     .font(.headline)
-                
+
                 Button(action: {
                     if outputPlayer.isPlaying {
                         outputPlayer.stop()
@@ -166,8 +282,16 @@ struct ContentView: View {
                     .foregroundColor(.green)
                     .cornerRadius(12)
                 }
+
+                // Waveform comparison
+                if !originalWaveform.isEmpty && !convertedWaveform.isEmpty {
+                    WaveformComparisonView(
+                        originalSamples: originalWaveform,
+                        convertedSamples: convertedWaveform
+                    )
+                }
             }
-            
+
             Spacer()
             
             // Status Log
@@ -296,22 +420,30 @@ struct ContentView: View {
     
     func startInference() async {
         guard let input = inputURL else { return }
-        
+
         if selectedModel == "Select Model" {
             statusMessage = "Please select a model first."
             log("Attempted inference without selecting model")
             return
         }
-        
+
         log("Starting inference processing...")
         isProcessing = true
-        
+
+        // Extract original waveform before conversion
+        originalWaveform = AudioWaveformExtractor.extractSamples(from: input)
+        log("Extracted \(originalWaveform.count) samples from original audio")
+
         // Temp output
         let output = FileManager.default.temporaryDirectory.appendingPathComponent("output.wav")
         self.outputURL = output
-        
+
         await inferenceEngine.infer(audioURL: input, outputURL: output)
         log("Inference complete.")
+
+        // Extract converted waveform after conversion
+        convertedWaveform = AudioWaveformExtractor.extractSamples(from: output)
+        log("Extracted \(convertedWaveform.count) samples from converted audio")
     }
 }
 
