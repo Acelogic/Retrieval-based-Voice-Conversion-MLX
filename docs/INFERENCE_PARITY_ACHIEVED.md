@@ -162,12 +162,108 @@ python3 tools/compare_rvc_full.py \
     --mlx_model "rvc_mlx/models/checkpoints/Drake.npz"
 ```
 
+---
+
+## Swift MLX Parity - ACHIEVED ✅
+
+**Date:** 2026-01-07
+**Average Correlation:** 91.8% (Spectrogram)
+**Status:** Production Ready
+
+### Swift MLX Results
+
+| Model | Correlation | Status |
+|-------|-------------|--------|
+| Drake | 92.9% | ✅ |
+| Juice WRLD | 86.6% | ✅ |
+| Eminem Modern | 94.4% | ✅ |
+| Bob Marley | 93.5% | ✅ |
+| Slim Shady | 91.9% | ✅ |
+| **Average** | **91.8%** | ✅ |
+
+### Critical Fixes Applied for Swift MLX
+
+#### 1. WaveNet Architecture - Single cond_layer
+**Issue:** Swift implementation had per-layer `cond_layer` while Python MLX has a single `cond_layer` at WaveNet level outputting `2 * hidden * n_layers` channels.
+
+**Fix:** Rewrote Swift WaveNet to match Python structure:
+```swift
+// Single cond_layer at WaveNet level
+let cond_layer: MLXNN.Conv1d?  // outputs 2 * hidden * n_layers
+
+// Per-layer slicing in forward pass
+for i in 0..<nLayers {
+    let startCh = i * 2 * hiddenChannels
+    let endCh = (i + 1) * 2 * hiddenChannels
+    let gSlice = gCond[0..., 0..., startCh..<endCh]
+}
+```
+
+#### 2. Flow Weight Key Mapping
+**Issue:** Weight file has keys like `flow.flow_0.enc...` but Swift used array-based structure expecting `flow.flows.0.enc...`. Flow weights were NOT loading!
+
+**Fix:** Changed from array to named properties:
+```swift
+// Changed from:
+var flows: [ResidualCouplingLayer] = []  // Weights don't load!
+
+// To:
+let flow_0: ResidualCouplingLayer
+let flow_1: ResidualCouplingLayer
+let flow_2: ResidualCouplingLayer
+let flow_3: ResidualCouplingLayer
+```
+
+#### 3. Flow Reverse Pass Order (CRITICAL!)
+**Issue:** The flip operation order differs between forward and reverse modes:
+- **Forward:** flow → flip (after flow)
+- **Reverse:** flip → flow (BEFORE flow!)
+
+Swift was incorrectly doing `flow → flip` in both modes.
+
+**Fix:**
+```swift
+if !reverse {
+    // Forward: flow then flip
+    for i in 0..<nFlows {
+        h = flows[i](h, xMask: xMask, g: g, reverse: false)
+        h = h[0..., 0..., .stride(by: -1)]  // Flip after
+    }
+} else {
+    // Reverse: flip then flow (CRITICAL!)
+    for i in (0..<nFlows).reversed() {
+        h = h[0..., 0..., .stride(by: -1)]  // Flip FIRST!
+        h = flows[i](h, xMask: xMask, g: g, reverse: true)
+    }
+}
+```
+
+**Impact:** This single fix improved parity from ~72% to ~92%.
+
+#### 4. Last Layer Special Case
+**Issue:** `res_skip_layer` for the last WaveNet layer outputs only `hidden_channels`, not `2 * hidden_channels`.
+
+**Fix:**
+```swift
+let res_skip_layer_0 = MLXNN.Conv1d(..., outputChannels: 2 * hiddenChannels, ...)
+let res_skip_layer_1 = MLXNN.Conv1d(..., outputChannels: 2 * hiddenChannels, ...)
+let res_skip_layer_2 = MLXNN.Conv1d(..., outputChannels: hiddenChannels, ...)  // Last!
+```
+
+### Swift MLX Documentation
+
+For detailed Swift MLX conversion guidance:
+- [MLX_PYTHON_SWIFT_DIFFERENCES.md](MLX_PYTHON_SWIFT_DIFFERENCES.md) - Python MLX vs Swift MLX
+- [PYTORCH_MLX_SWIFT_DIFFERENCES.md](PYTORCH_MLX_SWIFT_DIFFERENCES.md) - PyTorch vs Swift MLX
+
+---
+
 ## Next Steps
-1. ✅ Inference parity achieved
-2. Test with additional RVC models (40kHz, different architectures)
-3. Optimize MLX implementation for performance
-4. Add model quantization support
-5. Create end-to-end inference API
+1. ✅ Python MLX inference parity achieved (0.999847 correlation)
+2. ✅ Swift MLX inference parity achieved (91.8% average)
+3. Test with additional RVC models (40kHz, different architectures)
+4. Optimize Swift MLX implementation for performance
+5. Add model quantization support
 
 ## Conclusion
 

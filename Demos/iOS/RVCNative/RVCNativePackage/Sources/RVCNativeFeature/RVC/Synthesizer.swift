@@ -244,73 +244,97 @@ class TextEncoder: Module {
     }
 }
 
-// MARK: - WaveNet for Flow
-
-class WaveNetLayer: Module {
-    let in_layer: MLXNN.Conv1d
-    let res_skip_layer: MLXNN.Conv1d
-    let cond_layer: MLXNN.Conv1d?
-    let halfChannels: Int
-    
-    init(hiddenChannels: Int, kernelSize: Int, dilation: Int, ginChannels: Int) {
-        let padding = (kernelSize * dilation - dilation) / 2
-        self.in_layer = MLXNN.Conv1d(inputChannels: hiddenChannels, outputChannels: hiddenChannels * 2, kernelSize: kernelSize, padding: padding, dilation: dilation)
-        self.res_skip_layer = MLXNN.Conv1d(inputChannels: hiddenChannels, outputChannels: hiddenChannels * 2, kernelSize: 1)
-        self.cond_layer = ginChannels != 0 ? MLXNN.Conv1d(inputChannels: ginChannels, outputChannels: hiddenChannels * 2, kernelSize: 1) : nil
-        self.halfChannels = hiddenChannels
-        super.init()
-    }
-    
-    func callAsFunction(_ x: MLXArray, xMask: MLXArray, g: MLXArray?) -> (MLXArray, MLXArray) {
-        var h = in_layer(x)
-        
-        if let g = g, let condLayer = cond_layer {
-            h = h + condLayer(g)
-        }
-        
-        // Gated activation
-        let tAct = tanh(h[0..., 0..., 0..<halfChannels])
-        let sAct = sigmoid(h[0..., 0..., halfChannels...])
-        let acts = tAct * sAct
-        
-        let resSkip = res_skip_layer(acts)
-        let res = resSkip[0..., 0..., 0..<halfChannels]
-        let skip = resSkip[0..., 0..., halfChannels...]
-        
-        return ((x + res) * xMask, skip * xMask)
-    }
-}
+// MARK: - WaveNet for Flow (Matches Python MLX exactly)
 
 class WaveNet: Module {
-    var layers: [WaveNetLayer] = []
+    let hiddenChannels: Int
     let nLayers: Int
-    
+    let cond_layer: MLXNN.Conv1d?
+
+    // Individual layers registered as in_layer_0, in_layer_1, etc. to match Python weight keys
+    let in_layer_0: MLXNN.Conv1d
+    let in_layer_1: MLXNN.Conv1d
+    let in_layer_2: MLXNN.Conv1d
+
+    // res_skip_layer_2 (last layer) outputs hidden_channels, others output 2*hidden_channels
+    let res_skip_layer_0: MLXNN.Conv1d
+    let res_skip_layer_1: MLXNN.Conv1d
+    let res_skip_layer_2: MLXNN.Conv1d
+
     init(hiddenChannels: Int, kernelSize: Int, dilationRate: Int, nLayers: Int, ginChannels: Int) {
+        assert(nLayers == 3, "WaveNet hardcoded for 3 layers to match Python architecture")
+        self.hiddenChannels = hiddenChannels
         self.nLayers = nLayers
-        
-        self.layers = (0..<nLayers).map { i in
-            let dilation = Int(pow(Double(dilationRate), Double(i)))
-            return WaveNetLayer(hiddenChannels: hiddenChannels, kernelSize: kernelSize, dilation: dilation, ginChannels: ginChannels)
-        }
-        
+
+        // Single cond_layer at WaveNet level: outputs 2 * hidden * n_layers channels
+        self.cond_layer = ginChannels != 0 ? MLXNN.Conv1d(inputChannels: ginChannels, outputChannels: 2 * hiddenChannels * nLayers, kernelSize: 1) : nil
+
+        // Create in_layers with proper dilation and padding
+        let dilations = (0..<nLayers).map { Int(pow(Double(dilationRate), Double($0))) }
+        let paddings = dilations.map { (kernelSize * $0 - $0) / 2 }
+
+        self.in_layer_0 = MLXNN.Conv1d(inputChannels: hiddenChannels, outputChannels: 2 * hiddenChannels, kernelSize: kernelSize, padding: paddings[0], dilation: dilations[0])
+        self.in_layer_1 = MLXNN.Conv1d(inputChannels: hiddenChannels, outputChannels: 2 * hiddenChannels, kernelSize: kernelSize, padding: paddings[1], dilation: dilations[1])
+        self.in_layer_2 = MLXNN.Conv1d(inputChannels: hiddenChannels, outputChannels: 2 * hiddenChannels, kernelSize: kernelSize, padding: paddings[2], dilation: dilations[2])
+
+        // res_skip_layers: last layer outputs hidden_channels, others output 2*hidden_channels
+        self.res_skip_layer_0 = MLXNN.Conv1d(inputChannels: hiddenChannels, outputChannels: 2 * hiddenChannels, kernelSize: 1)
+        self.res_skip_layer_1 = MLXNN.Conv1d(inputChannels: hiddenChannels, outputChannels: 2 * hiddenChannels, kernelSize: 1)
+        self.res_skip_layer_2 = MLXNN.Conv1d(inputChannels: hiddenChannels, outputChannels: hiddenChannels, kernelSize: 1)  // Last layer: hidden only
+
         super.init()
     }
-    
+
     func callAsFunction(_ x: MLXArray, xMask: MLXArray, g: MLXArray?) -> MLXArray {
         var h = x
-        var skipSum: MLXArray? = nil
-        
+        var outputAcc = MLX.zeros(like: x)
+
+        // Apply cond_layer once to g, then slice per layer
+        var gCond: MLXArray? = nil
+        if let g = g, let condLayer = cond_layer {
+            gCond = condLayer(g)  // Shape: (B, T, 2*hidden*n_layers)
+        }
+
+        // Get in_layers and res_skip_layers as arrays for iteration
+        let inLayers = [in_layer_0, in_layer_1, in_layer_2]
+        let resSkipLayers = [res_skip_layer_0, res_skip_layer_1, res_skip_layer_2]
+
         for i in 0..<nLayers {
-            let (res, skip) = layers[i](h, xMask: xMask, g: g)
-            h = res
-            if skipSum == nil {
-                skipSum = skip
+            let xIn = inLayers[i](h)
+
+            // Slice conditioning for this layer
+            var acts: MLXArray
+            if let gCond = gCond {
+                let startCh = i * 2 * hiddenChannels
+                let endCh = (i + 1) * 2 * hiddenChannels
+                let gSlice = gCond[0..., 0..., startCh..<endCh]  // (B, T, 2*hidden)
+
+                // Gated activation: tanh(xIn + gSlice half) * sigmoid(xIn + gSlice half)
+                let combined = xIn + gSlice
+                let tAct = tanh(combined[0..., 0..., 0..<hiddenChannels])
+                let sAct = sigmoid(combined[0..., 0..., hiddenChannels...])
+                acts = tAct * sAct
             } else {
-                skipSum = skipSum! + skip
+                // No conditioning
+                let tAct = tanh(xIn[0..., 0..., 0..<hiddenChannels])
+                let sAct = sigmoid(xIn[0..., 0..., hiddenChannels...])
+                acts = tAct * sAct
+            }
+
+            let resSkipActs = resSkipLayers[i](acts)
+
+            if i < nLayers - 1 {
+                // Non-last layer: split into res and skip
+                let resActs = resSkipActs[0..., 0..., 0..<hiddenChannels]
+                h = (h + resActs) * xMask
+                outputAcc = outputAcc + resSkipActs[0..., 0..., hiddenChannels...]
+            } else {
+                // Last layer: entire output is skip (no res split)
+                outputAcc = outputAcc + resSkipActs
             }
         }
-        
-        return skipSum! * xMask
+
+        return outputAcc * xMask
     }
 }
 
@@ -366,32 +390,47 @@ class ResidualCouplingLayer: Module {
 }
 
 // MARK: - Residual Coupling Block (flow)
+// Uses named properties flow_0, flow_1, etc. to match weight file keys
 
 class ResidualCouplingBlock: Module {
-    var flows: [ResidualCouplingLayer] = []
     let nFlows: Int
-    
+
+    // Named properties to match weight keys: flow.flow_0.enc..., flow.flow_1.enc..., etc.
+    let flow_0: ResidualCouplingLayer
+    let flow_1: ResidualCouplingLayer
+    let flow_2: ResidualCouplingLayer
+    let flow_3: ResidualCouplingLayer
+
     init(channels: Int, hiddenChannels: Int, kernelSize: Int, dilationRate: Int, nLayers: Int, nFlows: Int = 4, ginChannels: Int) {
+        assert(nFlows == 4, "ResidualCouplingBlock hardcoded for 4 flows to match Python architecture")
         self.nFlows = nFlows
-        
-        self.flows = (0..<nFlows).map { _ in
-            ResidualCouplingLayer(channels: channels, hiddenChannels: hiddenChannels, kernelSize: kernelSize, dilationRate: dilationRate, nLayers: nLayers, ginChannels: ginChannels, meanOnly: true)
-        }
-        
+
+        self.flow_0 = ResidualCouplingLayer(channels: channels, hiddenChannels: hiddenChannels, kernelSize: kernelSize, dilationRate: dilationRate, nLayers: nLayers, ginChannels: ginChannels, meanOnly: true)
+        self.flow_1 = ResidualCouplingLayer(channels: channels, hiddenChannels: hiddenChannels, kernelSize: kernelSize, dilationRate: dilationRate, nLayers: nLayers, ginChannels: ginChannels, meanOnly: true)
+        self.flow_2 = ResidualCouplingLayer(channels: channels, hiddenChannels: hiddenChannels, kernelSize: kernelSize, dilationRate: dilationRate, nLayers: nLayers, ginChannels: ginChannels, meanOnly: true)
+        self.flow_3 = ResidualCouplingLayer(channels: channels, hiddenChannels: hiddenChannels, kernelSize: kernelSize, dilationRate: dilationRate, nLayers: nLayers, ginChannels: ginChannels, meanOnly: true)
+
         super.init()
     }
-    
+
     func callAsFunction(_ x: MLXArray, xMask: MLXArray, g: MLXArray?, reverse: Bool = false) -> MLXArray {
         var h = x
-        
-        let iterator: [Int] = reverse ? Array((0..<nFlows).reversed()) : Array(0..<nFlows)
-        
-        for i in iterator {
-            h = flows[i](h, xMask: xMask, g: g, reverse: reverse)
-            // Flip channels (axis 2)
-            h = h[0..., 0..., .stride(by: -1)]
+        let flows = [flow_0, flow_1, flow_2, flow_3]
+
+        if !reverse {
+            // Forward: flow then flip
+            for i in 0..<nFlows {
+                h = flows[i](h, xMask: xMask, g: g, reverse: false)
+                h = h[0..., 0..., .stride(by: -1)]  // Flip channels
+            }
+        } else {
+            // Reverse: flip then flow (CRITICAL: different order from forward!)
+            for i in (0..<nFlows).reversed() {
+                h = h[0..., 0..., .stride(by: -1)]  // Flip first!
+                h = flows[i](h, xMask: xMask, g: g, reverse: true)
+            }
         }
-        
+
         return h
     }
 }

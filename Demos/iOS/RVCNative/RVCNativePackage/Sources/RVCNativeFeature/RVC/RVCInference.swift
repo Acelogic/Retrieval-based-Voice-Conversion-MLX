@@ -231,16 +231,8 @@ import MLXNN
                     }
                 }
 
-                // 2. Flow index remapping
-                if k.hasPrefix("flow.flows.") {
-                    let parts = k.components(separatedBy: ".")
-                    if parts.count >= 3, let oldIdx = Int(parts[2]) {
-                        // PyTorch indices: 0, 2, 4, 6
-                        // Swift indices: 0, 1, 2, 3
-                        let newIdx = oldIdx / 2
-                        newK = (["flow", "flows", String(newIdx)] + parts.dropFirst(3)).joined(separator: ".")
-                    }
-                }
+                // 2. Flow weight keys now match directly: flow.flow_0, flow.flow_1, etc.
+                // No remapping needed - Swift structure uses flow_0, flow_1, etc. properties
 
                 // 3. DON'T flip kernel - the conversion script already handled transposition
                 // Testing: The manual ConvTranspose1d implementation might not need kernel flip
@@ -355,6 +347,16 @@ import MLXNN
                 // Check Generator resblock weights
                 let w0 = synth.dec.resblock_0.c1_0.conv.weight
                 log("DEBUG: resblock_0.c1_0.conv.weight (kernel=3): shape=\(w0.shape), range=[\(w0.min().item(Float.self))...\(w0.max().item(Float.self))]")
+
+                // Check Flow weights are loaded
+                let flowCondW = synth.flow.flow_0.enc.cond_layer?.weight
+                if let w = flowCondW {
+                    log("DEBUG: flow.flow_0.enc.cond_layer.weight: shape=\(w.shape), range=[\(w.min().item(Float.self))...\(w.max().item(Float.self))]")
+                } else {
+                    log("DEBUG: flow.flow_0.enc.cond_layer is nil!")
+                }
+                let flowIn0W = synth.flow.flow_0.enc.in_layer_0.weight
+                log("DEBUG: flow.flow_0.enc.in_layer_0.weight: shape=\(flowIn0W.shape), range=[\(flowIn0W.min().item(Float.self))...\(flowIn0W.max().item(Float.self))]")
             }
             
             // 3. Load RMVPE (Optional)

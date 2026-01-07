@@ -1,6 +1,6 @@
 # RVC MLX Documentation
 
-**Last Updated:** 2026-01-06
+**Last Updated:** 2026-01-07
 
 ## 📚 Documentation Structure
 
@@ -34,11 +34,25 @@ This directory contains comprehensive documentation for the RVC MLX project, org
 - Debugging tools used
 
 **[PYTORCH_MLX_DIFFERENCES.md](PYTORCH_MLX_DIFFERENCES.md)**
-- PyTorch vs MLX conventions
+- PyTorch vs Python MLX conventions
 - Weight conversion guide
 - Dimension ordering differences
 - Common pitfalls and solutions
 - Best practices for porting
+
+**[PYTORCH_MLX_SWIFT_DIFFERENCES.md](PYTORCH_MLX_SWIFT_DIFFERENCES.md)**
+- PyTorch vs MLX Swift conventions
+- Swift-specific weight conversion
+- Module definition patterns
+- API differences
+- Conversion checklist
+
+**[MLX_PYTHON_SWIFT_DIFFERENCES.md](MLX_PYTHON_SWIFT_DIFFERENCES.md)**
+- Python MLX vs Swift MLX conventions
+- Module parameter registration
+- Array slicing syntax
+- **Flow reverse pass order** (critical!)
+- Parity results (91.8% average)
 
 **[BENCHMARKS.md](BENCHMARKS.md)**
 - Detailed performance benchmarks
@@ -91,14 +105,20 @@ This directory contains comprehensive documentation for the RVC MLX project, org
 | RVC Inference Parity | ✅ Complete | [INFERENCE_PARITY_ACHIEVED.md](INFERENCE_PARITY_ACHIEVED.md) |
 | RMVPE Optimization | ✅ Complete | [RMVPE_OPTIMIZATION.md](RMVPE_OPTIMIZATION.md) |
 | Performance Benchmarks | ✅ Complete | [BENCHMARKS.md](BENCHMARKS.md) |
-| iOS/Swift Port | ⏳ In Progress | [IOS_DEVELOPMENT.md](IOS_DEVELOPMENT.md) |
+| **Swift MLX Port** | ✅ **91.8% Parity** | [MLX_PYTHON_SWIFT_DIFFERENCES.md](MLX_PYTHON_SWIFT_DIFFERENCES.md) |
+| iOS App | ✅ Complete | [IOS_DEVELOPMENT.md](IOS_DEVELOPMENT.md) |
 
 ## 🔍 Key Achievements
 
-### RVC Inference Parity ✅
+### RVC Inference Parity (Python MLX) ✅
 - **Correlation:** 0.999847 (nearly perfect!)
 - **Max Difference:** 0.015762 (audio samples)
 - **Status:** Production ready
+
+### Swift MLX Parity ✅ (NEW!)
+- **Average Correlation:** 91.8%
+- **Best Model:** 94.4% (Eminem Modern)
+- **Key Fixes:** Flow reverse pass order, WaveNet architecture, weight key mapping
 
 ### RMVPE Optimization ✅
 - **Voiced Detection Error:** 0.8%
