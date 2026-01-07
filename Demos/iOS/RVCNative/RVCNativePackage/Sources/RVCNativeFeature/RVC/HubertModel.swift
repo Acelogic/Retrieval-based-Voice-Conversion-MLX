@@ -366,7 +366,6 @@ public class HubertModel: Module {
         x = feature_projection(x)
         x = encoder(x)
         // x = final_proj(x) // Skip projection for RVC v2 (model expects 768-dim)
-        print("DEBUG: HubertModel output shape: \(x.shape)")
         return x
     }
 }

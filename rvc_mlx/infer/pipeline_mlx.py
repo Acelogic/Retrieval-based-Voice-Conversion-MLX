@@ -261,7 +261,7 @@ class PipelineMLX:
         audio = signal.filtfilt(bh, ah, audio)
         
         # Pad audio
-        audio_pad = np.pad(audio, (self.window // 2, self.window // 2), mode="reflect")
+        # audio_pad = np.pad(audio, (self.window // 2, self.window // 2), mode="reflect")
         
         # Chunking Logic (opt_ts)
         # Simplified: Just process whole audio if short, or chunk if long.
@@ -273,7 +273,8 @@ class PipelineMLX:
         # RVC often splits to avoid OOM on GPU. MLX UMA might handle larger batches better?
         # But let's verify.
         
-        t_pad = self.t_pad
+        # t_pad = self.t_pad
+        t_pad = 1600 # Force 0.1s padding for parity check stability
         t_pad_tgt = self.t_pad_tgt
         
         # Just calling voice_conversion on the padded audio
@@ -282,6 +283,10 @@ class PipelineMLX:
         
         # Let's reuse proper padding from original:
         audio_pad = np.pad(audio, (int(t_pad), int(t_pad)), mode="reflect")
+        
+        audio_print = [f"{x:.4f}" for x in audio_pad[:20]]
+        print(f"DEBUG: Audio input (padded, filtered) first 20 samples: [{', '.join(audio_print)}]")
+
         p_len = audio_pad.shape[0] // self.window
         
         pitch_data = None

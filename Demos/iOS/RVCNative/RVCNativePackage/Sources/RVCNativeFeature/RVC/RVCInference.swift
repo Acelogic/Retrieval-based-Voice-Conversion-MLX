@@ -62,6 +62,34 @@ import MLXNN
                 
                 newParams[newKey] = v
             }
+            
+            // Fix HuBERT PosConv Weight Norm
+            let gKey = "encoder.pos_conv_embed.conv.weight_g"
+            let vKey = "encoder.pos_conv_embed.conv.weight_v"
+            let outKey = "encoder.pos_conv_embed.conv.weight"
+            
+            if let weight_g_raw = newParams[gKey], let weight_v_raw = newParams[vKey] {
+                 // PyTorch weight_v: (Out, In/Groups, Kernel) e.g. (768, 48, 128)
+                 // PyTorch weight_g: (1, 1, Kernel) e.g. (1, 1, 128) [Weight Norm dim=2]
+                 
+                 // Structurally transpose to MLX Conv1d layout (Out, Kernel, In/Groups)
+                 let weight_v = weight_v_raw.transposed(axes: [0, 2, 1]) // (768, 128, 48)
+                 let weight_g = weight_g_raw.transposed(axes: [0, 2, 1]) // (1, 128, 1)
+                 
+                 // Norm calculation (PyTorch dim=2 -> MLX axes [0, 2])
+                 let v_sqr = weight_v * weight_v
+                 let v_sum = v_sqr.sum(axes: [0, 2], keepDims: true) // Result (1, 128, 1)
+                 let v_norm = sqrt(v_sum + 1e-12)
+                 let weight_normalized = weight_v / v_norm
+                 
+                 // Fuse
+                 let weight_fused = weight_g * weight_normalized
+                 
+                 newParams[outKey] = weight_fused
+                 newParams.removeValue(forKey: gKey)
+                 newParams.removeValue(forKey: vKey)
+                 log("RVCInference: Fused HuBERT PosConv weights (transposed, dim=2)")
+            }
             log("RVCInference: Loaded \(newParams.count) HuBERT weights")
             log("RVCInference: HuBERT sample keys: \(Array(newParams.keys.prefix(5)))")
             self.hubertModel?.update(parameters: ModuleParameters.unflattened(newParams))
@@ -310,12 +338,34 @@ import MLXNN
                             newKey = newKey.replacingOccurrences(of: ".layers.4.", with: ".l4.")
                         }
                         
+                        // Remap BatchNorm running stats (snake_case from PyTorch/SafeTensors -> camelCase for Swift MLX)
+                        // This is CRITICAL: unmatched keys mean BN uses init stats (mean=0, var=1), destroying signal scale
+                        if newKey.contains("running_mean") {
+                            print("DEBUG: Remapping running_mean found: \(newKey)")
+                        }
+                        newKey = newKey.replacingOccurrences(of: ".running_mean", with: ".runningMean")
+                        newKey = newKey.replacingOccurrences(of: ".running_var", with: ".runningVar")
+                        
+                        if newKey.contains("runningMean") {
+                            print("DEBUG: Remapped to runningMean: \(newKey)")
+                        }
+                        
                         remappedRMVPE[newKey] = v
                     }
                     
                     log("RVCInference: RMVPE sample keys after remapping: \(Array(remappedRMVPE.keys.prefix(5)))")
+                    
                     self.rmvpe?.update(parameters: ModuleParameters.unflattened(remappedRMVPE))
                     self.rmvpe?.train(false)  // CRITICAL: Set to eval mode for correct inference
+                    
+                    // DEBUG: Log matches
+                    let modelKeys = self.rmvpe?.parameters().flattened().map { $0.0 } ?? []
+                    log("RVCInference: Model Expected Keys (sample): \(modelKeys.prefix(10))")
+                    
+                    // Check if unet.encoder.bn.runningMean exists
+                    let expectedBNKey = modelKeys.first { $0.contains("bn") }
+                    log("RVCInference: Found BN key in model: \(String(describing: expectedBNKey))")
+                    
                     log("RVCInference: Loaded RMVPE weights: \(remappedRMVPE.count) keys")
                 } catch {
                     log("RVCInference: Failed to load RMVPE: \(error). Using fallback F0.")
@@ -353,9 +403,14 @@ import MLXNN
                     audioToProcess = audioArray[0..<maxSamples]
                 }
                 
-                // Add small edge padding for model context (0.1s each side)
-                let padSamples = 1600  // 0.1 seconds
-                let audioPadded = MLX.padded(audioToProcess, widths: [IntOrPair((padSamples, padSamples))], mode: .edge)
+                // Apply high-pass filter (Butterworth 5th order, 48Hz)
+                // Matches Python: signal.butter(5, 48, btype="high", fs=16000) + filtfilt
+                audioToProcess = applyButterworthHighPass(audioToProcess)
+                
+                // Add padding for model context (1s each side, reflect mode)
+                // Matches Python: np.pad(audio, (16000, 16000), mode="reflect")
+                let padSamples = 1600
+                let audioPadded = padReflect(audioToProcess, padding: padSamples)
                 
                 // Run inference on full audio
                 let outputPadded = try await inferChunk(chunk: audioPadded)
@@ -400,11 +455,11 @@ import MLXNN
             // DEBUG: Log audio input stats
             log("DEBUG: Audio input - shape: \(chunk.shape), min: \(chunk.min().item(Float.self)), max: \(chunk.max().item(Float.self)), mean: \(chunk.mean().item(Float.self))")
             
-            // Log first 10 audio samples
-            let audioSlice = chunk[0..<min(10, chunk.shape[0])].asType(Float.self)
+            // Log first 20 audio samples
+            let audioSlice = chunk[0..<min(20, chunk.shape[0])].asType(Float.self)
             MLX.eval(audioSlice)
             let audioSamples = audioSlice.asArray(Float.self)
-            log("DEBUG: Audio first 10 samples: \(audioSamples)")
+            log("DEBUG: Audio input (padded, filtered) first 20 samples: \(audioSamples)")
              
             // 1. Hubert Feature Extraction (16kHz -> 50fps)
             let audioInput = chunk.expandedDimensions(axis: 0) // [1, T]
@@ -548,5 +603,101 @@ import MLXNN
             }
 
             return output
+        }
+        
+        /// Apply high-pass filter: Butterworth 5th order, 48Hz cut-off, 16kHz sample rate
+        /// Matches scipy.signal.butter(5, 48, btype='high', fs=16000)
+        /// Uses forward-backward filtering (filtfilt) for zero phase shift
+        private func applyButterworthHighPass(_ audio: MLXArray) -> MLXArray {
+            // Coefficients for butter(5, 48, fs=16000)
+            let b: [Double] = [0.9699606451838447, -4.849803225919223, 9.699606451838447, -9.699606451838447, 4.849803225919223, -0.9699606451838447]
+            let a: [Double] = [1.0, -4.939001819168364, 9.757863526739543, -9.639544849413458, 4.761506797356209, -0.9408236532054606]
+            
+            // Extract samples to CPU and convert to Double for precision
+            MLX.eval(audio)
+            let samplesFloat = audio.asArray(Float.self)
+            let samples = samplesFloat.map { Double($0) }
+            
+            // Helper for simple Direct Form II filtering
+            func filter(_ x: [Double]) -> [Double] {
+                var y = [Double](repeating: 0, count: x.count)
+                
+                // Direct Form I difference equation:
+                // y[n] = b0*x[n] + ... + b5*x[n-5] - a1*y[n-1] - ... - a5*y[n-5]
+                // Assumes a[0] = 1.0
+                
+                for n in 0..<x.count {
+                    // Feedforward
+                    var val = b[0] * x[n]
+                    if n > 0 { val += b[1] * x[n-1] }
+                    if n > 1 { val += b[2] * x[n-2] }
+                    if n > 2 { val += b[3] * x[n-3] }
+                    if n > 3 { val += b[4] * x[n-4] }
+                    if n > 4 { val += b[5] * x[n-5] }
+                    
+                    // Feedback
+                    if n > 0 { val -= a[1] * y[n-1] }
+                    if n > 1 { val -= a[2] * y[n-2] }
+                    if n > 2 { val -= a[3] * y[n-3] }
+                    if n > 3 { val -= a[4] * y[n-4] }
+                    if n > 4 { val -= a[5] * y[n-5] }
+                    
+                    y[n] = val
+                }
+                return y
+            }
+            
+            // Forward pass
+            let y_fwd = filter(samples)
+            
+            // Backward pass (reverse, filter, reverse)
+            let y_rev = Array(y_fwd.reversed())
+            let y_back = filter(y_rev)
+            let y_final = Array(y_back.reversed())
+            
+            // Convert back to Float
+            let resultFloat = y_final.map { Float($0) }
+            return MLXArray(resultFloat)
+        }
+        
+        /// Manual reflect padding matching numpy.pad(mode='reflect')
+        /// Pads with the reflection of the vector mirrored on the first and last values of the vector
+        private func padReflect(_ audio: MLXArray, padding: Int) -> MLXArray {
+            MLX.eval(audio)
+            let samples = audio.asArray(Float.self)
+            let n = samples.count
+            
+            guard n > 1 else { return audio }
+            
+            // Left pad: reverse of samples[1...padding]
+            // If padding > n, this simple logic fails, but we assume padding < n (16000 < 30s audio)
+            // Python: pad=2, [0,1,2] -> [2,1, 0,1,2]
+            
+            var leftPad: [Float] = []
+            if padding > 0 {
+                // indices: 1 to padding
+                let start = 1
+                let end = min(padding, n - 1)
+                if end >= start {
+                    leftPad = Array(samples[start...end].reversed())
+                }
+            }
+            
+            var rightPad: [Float] = []
+            if padding > 0 {
+                // indices: (n-1-padding) to (n-2)
+                // Python: pad=2, [0,1,2] -> [0,1,2, 1,0]
+                // indices reflected around last element (2): 1, 0
+                // indices: n-2 down to n-1-padding
+                
+                let start = max(0, n - 1 - padding)
+                let end = n - 2
+                if end >= start {
+                    rightPad = Array(samples[start...end].reversed())
+                }
+            }
+            
+            let result = leftPad + samples + rightPad
+            return MLXArray(result)
         }
     }
