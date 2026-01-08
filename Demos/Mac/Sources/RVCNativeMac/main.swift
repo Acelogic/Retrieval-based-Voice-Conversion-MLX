@@ -10,21 +10,47 @@ func run() async {
     print("[DEBUG] main.swift: Starting run()")
     let args = ProcessInfo.processInfo.arguments
     print("[DEBUG] main.swift: Got \(args.count) arguments")
-    
+
     // Simple Argument Parsing
     // Usage: RVCNativeMac --audio <path> --model <path> --output <path> [--hubert <path>] [--ref <path>] [--benchmark]
-    
+    // Or: RVCNativeMac --convert <input.pth> --output <output.safetensors>
+
     func getArg(_ key: String) -> String? {
         if let idx = args.firstIndex(of: key), idx + 1 < args.count {
             return args[idx + 1]
         }
         return nil
     }
-    
+
+    // Check for conversion mode
+    if let convertPath = getArg("--convert") {
+        guard let outputPath = getArg("--output") else {
+            print("Usage: RVCNativeMac --convert <input.pth> --output <output.safetensors>")
+            return
+        }
+
+        print("Converting \(convertPath) to \(outputPath)...")
+        let inputURL = URL(fileURLWithPath: convertPath)
+        let outputURL = URL(fileURLWithPath: outputPath)
+
+        do {
+            let weights = try PthConverter.shared.convert(url: inputURL) { progress, status in
+                print("[\(String(format: "%.0f", progress * 100))%] \(status)")
+            }
+            print("Conversion complete. Saving \(weights.count) tensors...")
+            try MLX.save(arrays: weights, url: outputURL)
+            print("Saved to \(outputURL.path)")
+        } catch {
+            print("Conversion error: \(error)")
+        }
+        return
+    }
+
     guard let audioPath = getArg("--audio"),
           let modelPath = getArg("--model"),
           let outputPath = getArg("--output") else {
         print("Usage: RVCNativeMac --audio <in.wav> --model <model.safetensors> --output <out.wav> [--hubert <hubert.safetensors>] [--ref <reference.wav>] [--benchmark] [--volume 1.0]")
+        print("Or:    RVCNativeMac --convert <input.pth> --output <output.safetensors>")
         return
     }
     
