@@ -332,7 +332,9 @@ if __name__ == "__main__":
     parser.add_argument("--input", type=str, required=True, help="Input audio path")
     parser.add_argument("--output", type=str, required=True, help="Output audio path")
     parser.add_argument("--pitch", type=int, default=0, help="Pitch shift")
-    parser.add_argument("--f0-method", type=str, default="rmvpe", help="F0 method (rmvpe)")
+    parser.add_argument("--f0-method", type=str, default="rmvpe",
+                        choices=["rmvpe", "dio", "pm", "harvest", "crepe", "crepe-tiny", "fcpe"],
+                        help="F0 extraction method: rmvpe (default), dio, pm, harvest, crepe, crepe-tiny, fcpe")
     parser.add_argument("--index", type=str, default="", help="Path to .index file")
     
     args = parser.parse_args()

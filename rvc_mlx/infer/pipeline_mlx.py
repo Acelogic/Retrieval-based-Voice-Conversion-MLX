@@ -11,6 +11,7 @@ except ImportError:
     print("Warning: faiss not installed. Index usage will fail.")
 
 from rvc_mlx.lib.mlx.rmvpe import RMVPE0Predictor
+from rvc_mlx.lib.mlx.pitch_extractors import PitchExtractor
 
 class AudioProcessor:
     @staticmethod
@@ -77,7 +78,10 @@ class Autotune:
         return autotuned_f0
 
 class PipelineMLX:
-    def __init__(self, tgt_sr, config, hubert_model=None, rmvpe_model=None):
+    # Supported pitch extraction methods
+    SUPPORTED_F0_METHODS = PitchExtractor.METHODS
+
+    def __init__(self, tgt_sr, config, hubert_model=None, rmvpe_model=None, f0_method="rmvpe"):
         self.x_pad = config.x_pad
         self.x_query = config.x_query
         self.x_center = config.x_center
@@ -96,24 +100,44 @@ class PipelineMLX:
         self.f0_max = 1100
         self.f0_mel_min = 1127 * np.log(1 + self.f0_min / 700)
         self.f0_mel_max = 1127 * np.log(1 + self.f0_max / 700)
-        
+
         self.autotune = Autotune()
-        
+
         # Inject MLX models
         self.hubert_model = hubert_model
-        # RMVPE model instantiated on demand or passed in?
-        # Better pass in to avoid reloading
-        self.rmvpe_model = rmvpe_model if rmvpe_model else RMVPE0Predictor()
+
+        # Initialize pitch extractor - supports multiple methods
+        self._f0_method = f0_method
+        self._pitch_extractor = None
+
+        # Keep legacy RMVPE model for backward compatibility
+        if rmvpe_model:
+            self.rmvpe_model = rmvpe_model
+        else:
+            self.rmvpe_model = None  # Will be initialized on demand
+
+    def _get_pitch_extractor(self, method):
+        """Get pitch extractor for given method, caching the current one."""
+        if self._pitch_extractor is None or self._f0_method != method:
+            self._f0_method = method
+            try:
+                self._pitch_extractor = PitchExtractor(
+                    method=method,
+                    sample_rate=self.sample_rate,
+                    hop_size=self.window,
+                )
+            except Exception as e:
+                print(f"Warning: Failed to initialize {method} extractor: {e}. Falling back to rmvpe.")
+                self._pitch_extractor = PitchExtractor(method="rmvpe")
+                self._f0_method = "rmvpe"
+        return self._pitch_extractor
 
     def get_f0(self, x, p_len, f0_method, pitch, f0_autotune, f0_autotune_strength, proposed_pitch, proposed_pitch_threshold):
         # x: numpy array
-        
-        if f0_method == "rmvpe":
-             f0 = self.rmvpe_model.infer_from_audio(x, thred=0.03)
-        else:
-             # Fallback to RMVPE for now as others are Torch
-             print(f"Warning: {f0_method} not supported in pure MLX mode. Using RMVPE.")
-             f0 = self.rmvpe_model.infer_from_audio(x, thred=0.03)
+
+        # Use PitchExtractor for all methods
+        extractor = self._get_pitch_extractor(f0_method)
+        f0 = extractor.extract(x, f0_min=self.f0_min, f0_max=self.f0_max)
 
         # F0 adjustments
         if f0_autotune:
