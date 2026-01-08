@@ -137,7 +137,9 @@ The project also includes a **native Swift MLX implementation** for iOS and macO
 ### Swift Implementation Features
 - Native MLX Swift with Metal GPU acceleration
 - Full RVC pipeline: HuBERT → TextEncoder → Flow → Generator
-- RMVPE pitch extraction
+- RMVPE pitch extraction (Default)
+- FCPE, Crepe, Crepe-Tiny support (Python)
+- Native FAISS Index Support (IVFFlat)
 - On-device .pth → .safetensors conversion
 - See: `Demos/iOS/` and `Demos/Mac/`
 

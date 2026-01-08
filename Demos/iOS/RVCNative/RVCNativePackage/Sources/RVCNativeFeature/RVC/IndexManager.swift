@@ -34,26 +34,41 @@ public class IndexManager {
     
     public init() {}
     
-    /// Load index vectors from a safetensors file.
+    /// Load index vectors from a file.
     ///
-    /// The file should contain a "vectors" key with shape (N, 768).
-    /// Use `tools/convert_index_for_ios.py` to convert FAISS .index files.
+    /// Supports two formats:
+    /// - `.index`: Native FAISS IVFFlat format (parsed directly)
+    /// - `.safetensors`: Pre-converted format with "vectors" key
     ///
-    /// - Parameter url: URL to the .safetensors file
-    /// - Throws: If the file cannot be loaded or doesn't contain vectors
-    public func load(url: URL) throws {
-        let arrays = try MLX.loadArrays(url: url)
+    /// - Parameter url: URL to the index file
+    /// - Parameter logger: Optional callback for logging
+    /// - Throws: If the file cannot be loaded or parsed
+    public func load(url: URL, logger: ((String) -> Void)? = nil) throws {
+        let ext = url.pathExtension.lowercased()
         
-        guard let loadedVectors = arrays["vectors"] else {
-            throw IndexManagerError.missingVectors
+        if ext == "index" {
+            // Native FAISS format
+            let (loadedVectors, dim) = try FAISSIndexReader.read(url: url, logger: logger)
+            guard dim == 768 else {
+                throw IndexManagerError.invalidShape([loadedVectors.shape[0], dim])
+            }
+            self.vectors = loadedVectors
+            MLX.eval(self.vectors!)
+        } else {
+            // Safetensors format (legacy)
+            let arrays = try MLX.loadArrays(url: url)
+            
+            guard let loadedVectors = arrays["vectors"] else {
+                throw IndexManagerError.missingVectors
+            }
+            
+            guard loadedVectors.ndim == 2 else {
+                throw IndexManagerError.invalidShape(loadedVectors.shape)
+            }
+            
+            self.vectors = loadedVectors
+            MLX.eval(self.vectors!)
         }
-        
-        guard loadedVectors.ndim == 2 else {
-            throw IndexManagerError.invalidShape(loadedVectors.shape)
-        }
-        
-        self.vectors = loadedVectors
-        MLX.eval(self.vectors!)
     }
     
     /// Unload the index to free memory.

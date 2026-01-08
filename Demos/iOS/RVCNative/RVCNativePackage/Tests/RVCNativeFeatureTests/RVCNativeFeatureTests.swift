@@ -36,16 +36,19 @@ final class RVCNativeFeatureTests: XCTestCase {
         // Run conversion
         let converter = PthConverter.shared
         
-        var progressCalled = false
-        var lastProgress = 0.0
+        final class ConversionState: @unchecked Sendable {
+            var progressCalled = false
+            var lastProgress = 0.0
+        }
+        let state = ConversionState()
         
         let arrays = try converter.convert(url: testFileUrl) { progress, msg in
              print("Progress: \(progress) - \(msg)")
-             progressCalled = true
-             lastProgress = progress
+             state.progressCalled = true
+             state.lastProgress = progress
         }
         
-        XCTAssertTrue(progressCalled, "Progress callback should have been called")
+        XCTAssertTrue(state.progressCalled, "Progress callback should have been called")
         
         // Assertions
         XCTAssertFalse(arrays.isEmpty, "Resulting dictionary should not be empty")

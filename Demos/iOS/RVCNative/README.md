@@ -15,6 +15,7 @@ Built with a **workspace + SPM package** architecture for clean separation betwe
   - **Native .pth Conversion**: Convert standard PyTorch RVC models directly on-device
   - **Zip Support**: Import .zip archives containing models
   - **Auto-Conversion**: Automatically converts to MLX-optimized `.safetensors` format
+  - **Native FAISS Support**: Directly parses FAISS `.index` files (IVFFlat) without Python conversion
 - **Playback Controls**: Play original and converted audio with visual feedback
 - **Waveform Visualization**: Real-time comparison of original vs converted audio waveforms
 - **Model Components**:
@@ -43,6 +44,7 @@ Built with a **workspace + SPM package** architecture for clean separation betwe
 - ✅ Resolved `BatchNorm` 5D dimension crashes
 - ✅ Input padding (32-multiple) for RMVPE stability
 - ✅ Output length alignment (F0/Phones sync)
+- ✅ **Native FAISS Parser**: Direct binary parsing of IVFFlat indices (eliminates Python dependency)
 - ✅ **Audio Parity**: ~92% spectrogram correlation with Python MLX reference
 
 ### Audio Parity Status (Python MLX vs Swift MLX)
