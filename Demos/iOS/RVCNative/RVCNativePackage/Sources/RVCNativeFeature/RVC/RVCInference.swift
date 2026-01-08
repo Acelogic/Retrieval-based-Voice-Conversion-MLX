@@ -15,6 +15,8 @@ import MLXNN
         var hubertModel: HubertModel?
         var synthesizer: Synthesizer?
         var rmvpe: RMVPE?
+        var indexManager: IndexManager?
+        var indexRate: Float = 0.75
         var modelSampleRate: Int = 40000  // Detected from model config
         
         private func log(_ message: String) {
@@ -38,8 +40,34 @@ import MLXNN
             hubertModel = nil
             synthesizer = nil
             rmvpe = nil
+            indexManager?.unload()
+            indexManager = nil
             status = "Idle"
             log("RVCInference: Models unloaded.")
+        }
+
+        /// Load index vectors for speaker embedding retrieval.
+        ///
+        /// The index file should be a .safetensors file created by
+        /// `tools/convert_index_for_ios.py` from a FAISS .index file.
+        ///
+        /// - Parameters:
+        ///   - url: URL to the index .safetensors file
+        ///   - rate: Index blending rate (0.0-1.0, default 0.75)
+        public func loadIndex(url: URL, rate: Float = 0.75) throws {
+            log("RVCInference: Loading index from \(url.lastPathComponent)")
+            let manager = IndexManager()
+            try manager.load(url: url)
+            self.indexManager = manager
+            self.indexRate = rate
+            log("RVCInference: Index loaded with \(manager.count) vectors, rate=\(rate)")
+        }
+
+        /// Unload the index to free memory.
+        public func unloadIndex() {
+            indexManager?.unload()
+            indexManager = nil
+            log("RVCInference: Index unloaded.")
         }
 
         public func loadWeights(hubertURL: URL, modelURL: URL, rmvpeURL: URL? = nil) async throws {
@@ -616,6 +644,12 @@ import MLXNN
             let broadcasted = MLX.broadcast(expanded, to: [N, L, 2, C])
             var phone = broadcasted.reshaped([N, L * 2, C])
             log("DEBUG: Upsampled phone shape: \(phone.shape)")
+
+            // 3b. Apply index retrieval if loaded (speaker embedding blending)
+            if let indexManager = indexManager, indexRate > 0 {
+                phone = indexManager.search(features: phone, indexRate: indexRate)
+                log("DEBUG: Applied index retrieval with rate=\(indexRate)")
+            }
 
             // 4. Coarse Pitch calculation (Hz -> Bucket 1-255)
             let f0Hz = f0.squeezed(axes: [2]) // [1, L_f0]

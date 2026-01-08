@@ -23,6 +23,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from tools.convert_rvc_model import remap_key_name
 
+try:
+    import faiss
+    FAISS_AVAILABLE = True
+except ImportError:
+    FAISS_AVAILABLE = False
+
 def fuse_weight_norm(state_dict):
     """Fuse weight normalization (weight_g, weight_v) into single weight tensor"""
     fused = {}
@@ -345,6 +351,72 @@ def convert_rmvpe_model(rmvpe_path: Path, output_path: Path):
 
     return output_file
 
+
+def convert_index_if_exists(model_dir: Path, output_path: Path, model_name: str):
+    """
+    Convert FAISS .index file to safetensors if it exists alongside the model.
+    
+    Searches for index files in common RVC patterns:
+    - model.index
+    - added_*.index
+    - trained_*.index
+    """
+    if not FAISS_AVAILABLE:
+        print("\n⚠️  FAISS not installed - skipping index conversion")
+        print("   Install with: pip install faiss-cpu")
+        return None
+    
+    # Search patterns for index files
+    index_patterns = [
+        model_dir / "*.index",
+        model_dir / "added_*.index",
+        model_dir / "trained_*.index",
+    ]
+    
+    index_files = []
+    for pattern in index_patterns:
+        index_files.extend(model_dir.glob(pattern.name))
+    
+    if not index_files:
+        print(f"\n⚠️  No .index files found in {model_dir}")
+        return None
+    
+    # Use the first index file found
+    index_path = index_files[0]
+    
+    print(f"\n{'='*60}")
+    print(f"Converting Index: {index_path.name}")
+    print(f"{'='*60}")
+    
+    # Load FAISS index
+    print(f"Loading FAISS index from: {index_path}")
+    index = faiss.read_index(str(index_path))
+    n_vectors = index.ntotal
+    print(f"Index contains {n_vectors:,} vectors")
+    
+    # Extract vectors
+    vectors = index.reconstruct_n(0, n_vectors)
+    dim = vectors.shape[1]
+    print(f"Vector dimension: {dim}")
+    print(f"Memory size: {vectors.nbytes / (1024*1024):.1f} MB")
+    
+    # Convert to MLX
+    vectors_mlx = mx.array(vectors.astype(np.float32))
+    
+    # Save as safetensors
+    output_file = output_path / f"{model_name}_index.safetensors"
+    print(f"Saving to: {output_file}")
+    mx.save_safetensors(str(output_file), {"vectors": vectors_mlx})
+    
+    # Verify
+    loaded = mx.load(str(output_file))
+    assert "vectors" in loaded, "Vectors not found in saved file"
+    assert loaded["vectors"].shape == (n_vectors, dim), "Shape mismatch"
+    
+    print(f"✅ Successfully converted index: {n_vectors:,} vectors ({dim}D)")
+    
+    return output_file
+
 def verify_converted_model_in_python(model_path: Path, audio_path: Path):
     """
     Load the converted model in Python MLX and run a test inference.
@@ -433,6 +505,12 @@ def main():
         convert_rmvpe_model(rmvpe_path, output_path)
     else:
         print(f"\n⚠️  Skipping RMVPE conversion - not found at {rmvpe_path}")
+
+    # Convert Index (if exists alongside model)
+    model_dir = Path(args.model_path)
+    converted_index = convert_index_if_exists(model_dir, output_path, args.model_name)
+    if converted_index:
+        print(f"   Index saved to: {converted_index}")
 
     # Verify if requested
     if args.verify:
