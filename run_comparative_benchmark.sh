@@ -1,6 +1,37 @@
 #!/bin/bash
 set -e
 
+# Parse command line flags
+SKIP_CLEANUP=false
+BACKUP_FIRST=false
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --skip-cleanup)
+            SKIP_CLEANUP=true
+            shift
+            ;;
+        --backup-first)
+            BACKUP_FIRST=true
+            shift
+            ;;
+        --help|-h)
+            echo "Usage: $0 [OPTIONS]"
+            echo ""
+            echo "Options:"
+            echo "  --skip-cleanup   Skip deletion of existing weights"
+            echo "  --backup-first   Backup weights to weights_archive/ before cleanup"
+            echo "  --help, -h       Show this help message"
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Use --help for usage information"
+            exit 1
+            ;;
+    esac
+done
+
 # Configuration
 TEST_RESULTS_DIR="test_results"
 TEST_AUDIO_DIR="test-audio"
@@ -13,7 +44,7 @@ RMVPE_SOURCE="rvc/models/predictors/rmvpe.pt"
 
 # Priority Models (will test all available)
 # 48kHz models preferred for better quality
-PRIORITY_MODELS=("Drake" "Juice WRLD (RVC v2) 310 Epochs" "Eminem Modern" "Bob Marley (RVC v2) (500 Epochs) RMVPE" "Slim_Shady_New")
+PRIORITY_MODELS=("Drake" "Juice WRLD (RVC v2) 310 Epochs" "Eminem Modern" "Bob Marley (RVC v2) (500 Epochs) RMVPE" "Slim_Shady_New" "Coder999V2")
 
 # Input Audio (The sole source of truth)
 INPUT_AUDIO="${TEST_AUDIO_DIR}/input_16k.wav"
@@ -92,11 +123,29 @@ echo ""
 echo "--------------------------------------------------"
 echo "Cleaning up old artifacts..."
 echo "--------------------------------------------------"
+
+# Always clean test results
 rm -rf "${TEST_RESULTS_DIR}"
 mkdir -p "${TEST_RESULTS_DIR}"
-rm -f weights/*.safetensors weights/*.npz weights/*.json
-rm -f "${IOS_ASSETS_DIR}"/*.safetensors
-echo "✅ Cleanup complete"
+
+if [ "$SKIP_CLEANUP" = true ]; then
+    echo "⏭️  Skipping weight cleanup (--skip-cleanup flag set)"
+else
+    # Backup first if requested
+    if [ "$BACKUP_FIRST" = true ]; then
+        echo "📦 Backing up weights first..."
+        SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+        if [ -x "${SCRIPT_DIR}/scripts/backup_weights.sh" ]; then
+            "${SCRIPT_DIR}/scripts/backup_weights.sh"
+        else
+            echo "⚠️  Backup script not found, skipping backup"
+        fi
+    fi
+
+    rm -f weights/*.safetensors weights/*.npz weights/*.json
+    rm -f "${IOS_ASSETS_DIR}"/*.safetensors
+    echo "✅ Cleanup complete"
+fi
 
 # 4. Total Weight Reconstruction (From Scratch)
 echo ""

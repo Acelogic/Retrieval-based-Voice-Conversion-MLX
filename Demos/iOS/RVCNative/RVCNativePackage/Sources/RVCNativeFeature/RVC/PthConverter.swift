@@ -276,30 +276,109 @@ public final class PthConverter: Sendable {
             }
         }
         
-        // Transposition for MLX Conv1d/Linear
-        // MLX Conv1d expects [N, L, C] input? No, weights.
-        // MLX Conv1d weights: [Out, Kernel, In] ?
-        // PyTorch Conv1d weights: [Out, In, Kernel]
-        // MLX Conv1d weights: [Out, Kernel, In]  <-- Wait, checking reference.
-        // The python script says:
-        // if "ups" in k: v = v.transpose(1, 2, 0)
-        // else: v = v.transpose(0, 2, 1)
-        
-        // Let's copy the logic exactly.
-        
-        var finalDict: [String: MLXArray] = [:]
+        // Key remapping: Convert PyTorch naming to Swift model structure
+        // flow.flows.0 -> flow.flow_0, flow.flows.2 -> flow.flow_1, etc.
+        // in_layers.0 -> in_layer_0, res_skip_layers.0 -> res_skip_layer_0, etc.
+        var remappedDict: [String: MLXArray] = [:]
         for (k, v) in newDict {
+            var newKey = k
+
+            // Remap flow indices: flows.0 -> flow_0, flows.2 -> flow_1, flows.4 -> flow_2, flows.6 -> flow_3
+            if newKey.contains("flow.flows.") {
+                newKey = newKey.replacingOccurrences(of: "flow.flows.0", with: "flow.flow_0")
+                newKey = newKey.replacingOccurrences(of: "flow.flows.2", with: "flow.flow_1")
+                newKey = newKey.replacingOccurrences(of: "flow.flows.4", with: "flow.flow_2")
+                newKey = newKey.replacingOccurrences(of: "flow.flows.6", with: "flow.flow_3")
+            }
+
+            // Remap layer list indices: in_layers.0 -> in_layer_0, res_skip_layers.0 -> res_skip_layer_0
+            let layerPattern = try? NSRegularExpression(pattern: "(in_layers|res_skip_layers)\\.(\\d+)")
+            if let regex = layerPattern {
+                let range = NSRange(newKey.startIndex..., in: newKey)
+                newKey = regex.stringByReplacingMatches(in: newKey, range: range, withTemplate: "$1_$2")
+                // Fix: in_layers_0 should be in_layer_0 (singular)
+                newKey = newKey.replacingOccurrences(of: "in_layers_", with: "in_layer_")
+                newKey = newKey.replacingOccurrences(of: "res_skip_layers_", with: "res_skip_layer_")
+            }
+
+            // Remap decoder keys: noise_convs.N -> noise_conv_N, ups.N -> up_N
+            if let noisePattern = try? NSRegularExpression(pattern: "dec\\.noise_convs\\.(\\d+)") {
+                let range = NSRange(newKey.startIndex..., in: newKey)
+                newKey = noisePattern.stringByReplacingMatches(in: newKey, range: range, withTemplate: "dec.noise_conv_$1")
+            }
+
+            if let upsPattern = try? NSRegularExpression(pattern: "dec\\.ups\\.(\\d+)") {
+                let range = NSRange(newKey.startIndex..., in: newKey)
+                newKey = upsPattern.stringByReplacingMatches(in: newKey, range: range, withTemplate: "dec.up_$1")
+            }
+
+            // Remap resblocks: dec.resblocks.N.convs1.M -> dec.resblock_N.c1_M
+            //                  dec.resblocks.N.convs2.M -> dec.resblock_N.c2_M
+            if let resblock1Pattern = try? NSRegularExpression(pattern: "dec\\.resblocks\\.(\\d+)\\.convs1\\.(\\d+)") {
+                let range = NSRange(newKey.startIndex..., in: newKey)
+                newKey = resblock1Pattern.stringByReplacingMatches(in: newKey, range: range, withTemplate: "dec.resblock_$1.c1_$2")
+            }
+
+            if let resblock2Pattern = try? NSRegularExpression(pattern: "dec\\.resblocks\\.(\\d+)\\.convs2\\.(\\d+)") {
+                let range = NSRange(newKey.startIndex..., in: newKey)
+                newKey = resblock2Pattern.stringByReplacingMatches(in: newKey, range: range, withTemplate: "dec.resblock_$1.c2_$2")
+            }
+
+            // Remap encoder attention/ffn layers: enc_p.encoder.attn_layers.N -> enc_p.encoder.attn_N
+            //                                     enc_p.encoder.norm_layers_1.N -> enc_p.encoder.norm1_N
+            //                                     enc_p.encoder.norm_layers_2.N -> enc_p.encoder.norm2_N
+            //                                     enc_p.encoder.ffn_layers.N -> enc_p.encoder.ffn_N
+            if let attnPattern = try? NSRegularExpression(pattern: "enc_p\\.encoder\\.attn_layers\\.(\\d+)") {
+                let range = NSRange(newKey.startIndex..., in: newKey)
+                newKey = attnPattern.stringByReplacingMatches(in: newKey, range: range, withTemplate: "enc_p.encoder.attn_$1")
+            }
+
+            if let norm1Pattern = try? NSRegularExpression(pattern: "enc_p\\.encoder\\.norm_layers_1\\.(\\d+)") {
+                let range = NSRange(newKey.startIndex..., in: newKey)
+                newKey = norm1Pattern.stringByReplacingMatches(in: newKey, range: range, withTemplate: "enc_p.encoder.norm1_$1")
+            }
+
+            if let norm2Pattern = try? NSRegularExpression(pattern: "enc_p\\.encoder\\.norm_layers_2\\.(\\d+)") {
+                let range = NSRange(newKey.startIndex..., in: newKey)
+                newKey = norm2Pattern.stringByReplacingMatches(in: newKey, range: range, withTemplate: "enc_p.encoder.norm2_$1")
+            }
+
+            if let ffnPattern = try? NSRegularExpression(pattern: "enc_p\\.encoder\\.ffn_layers\\.(\\d+)") {
+                let range = NSRange(newKey.startIndex..., in: newKey)
+                newKey = ffnPattern.stringByReplacingMatches(in: newKey, range: range, withTemplate: "enc_p.encoder.ffn_$1")
+            }
+
+            // Remap LayerNorm parameters: gamma -> weight, beta -> bias
+            // PyTorch LayerNorm uses gamma/beta, MLX uses weight/bias
+            if newKey.hasSuffix(".gamma") {
+                newKey = String(newKey.dropLast(6)) + ".weight"
+            } else if newKey.hasSuffix(".beta") {
+                newKey = String(newKey.dropLast(5)) + ".bias"
+            }
+
+            remappedDict[newKey] = v
+        }
+
+        // Transposition for MLX Conv1d/Linear
+        // PyTorch Conv1d weights: [Out, In, Kernel]
+        // MLX Conv1d weights: [Out, Kernel, In]
+        // ConvTranspose (ups/up_) weights use [1, 2, 0]: (In, Out, Kernel) -> (Out, Kernel, In)
+        // Regular Conv weights use [0, 2, 1]: (Out, In, Kernel) -> (Out, Kernel, In)
+
+        var finalDict: [String: MLXArray] = [:]
+        for (k, v) in remappedDict {
             var val = v
             if k.contains("emb") && k.contains("weight") {
-                // Pass
+                // Embedding weights - no transposition needed
             } else if k.contains("weight") && val.ndim == 3 {
-                if k.contains("ups") {
+                // Check for upsample (ConvTranspose) layers - after remapping, keys are "dec.up_N"
+                if k.contains(".up_") || k.contains(".ups.") {
                     val = val.transposed(axes: [1, 2, 0])
                 } else {
                     val = val.transposed(axes: [0, 2, 1])
                 }
             } else if k.contains("weight") && val.ndim == 2 && k.lowercased().contains("linear") {
-                 val = val.transposed() // (Out, In) -> (In, Out)
+                val = val.transposed() // (Out, In) -> (In, Out) - Required for MLX Linear
             }
             finalDict[k] = val
         }

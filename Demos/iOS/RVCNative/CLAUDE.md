@@ -731,3 +731,177 @@ struct TaskListView: View {
 ---
 
 Remember: This project prioritizes clean, simple SwiftUI code using the platform's native state management. Keep the app shell minimal and implement all features in the Swift Package.
+
+---
+
+# RVC MLX Swift - Critical Implementation Knowledge
+
+**IMPORTANT**: This iOS app implements **Retrieval-based Voice Conversion (RVC)** using **MLX Swift**. The following critical bugs and fixes MUST be understood when modifying the ML code.
+
+## Critical Bug Fixes (DO NOT REGRESS)
+
+### 1. Flow Reverse Pass Order (CRITICAL - 20% correlation improvement)
+
+**Bug**: Flow reverse pass was doing flip AFTER flow instead of BEFORE.
+
+**Wrong (72% correlation)**:
+```swift
+// WRONG - flip after flow
+for i in (0..<nFlows).reversed() {
+    h = flows[i](h, xMask: xMask, g: g, reverse: true)
+    h = h[0..., 0..., .stride(by: -1)]  // flip AFTER - WRONG!
+}
+```
+
+**Correct (92% correlation)**:
+```swift
+// CORRECT - flip BEFORE flow in reverse mode
+for i in (0..<nFlows).reversed() {
+    h = h[0..., 0..., .stride(by: -1)]  // flip BEFORE - CORRECT!
+    h = flows[i](h, xMask: xMask, g: g, reverse: true)
+}
+```
+
+**File**: `Synthesizer.swift` - `ResidualCouplingBlock.callAsFunction()`
+
+### 2. CustomBatchNorm for RMVPE (CRITICAL - Fixes NaN outputs)
+
+**Bug**: MLX Swift's built-in `BatchNorm` does NOT expose `runningMean`/`runningVar` via `parameters()`. When loading weights, running stats stay at defaults (mean=0, var=1), causing signal explosion and NaN outputs.
+
+**Symptoms**:
+- RMVPE encoder values exploding (reaching 1e18)
+- NaN in final F0 predictions
+- All F0 values become 0 Hz
+
+**Solution**: Created `CustomBatchNorm` class that exposes running stats as explicit properties:
+```swift
+class CustomBatchNorm: Module {
+    var runningMean: MLXArray  // Exposed for weight loading
+    var runningVar: MLXArray   // Exposed for weight loading
+    var weight: MLXArray
+    var bias: MLXArray
+    // ... proper normalization implementation
+}
+```
+
+**File**: `RMVPE.swift` - Replace ALL BatchNorm with CustomBatchNorm
+
+### 3. Linear Weight Transposition in PthConverter (CRITICAL)
+
+**Bug**: Linear weights with "linear" in their key name require transposition from PyTorch (Out, In) to MLX format.
+
+**Wrong**:
+```swift
+// Removed transposition - BREAKS INFERENCE
+// NOTE: Linear weights (2D) do NOT need transposition  // WRONG COMMENT!
+```
+
+**Correct**:
+```swift
+} else if k.contains("weight") && val.ndim == 2 && k.lowercased().contains("linear") {
+    val = val.transposed()  // (Out, In) -> (In, Out) - Required for MLX Linear
+}
+```
+
+**File**: `PthConverter.swift`
+
+### 4. Weight Key Remapping (CRITICAL - Weights won't load without this)
+
+**Bug**: PyTorch module names don't match Swift property names. MLX Swift requires EXACT key path matches.
+
+**Required Remappings in `PthConverter.swift`**:
+```swift
+// Decoder
+"dec.noise_convs.N" → "dec.noise_conv_N"
+"dec.ups.N" → "dec.up_N"
+"dec.resblocks.N.convs1.M" → "dec.resblock_N.c1_M"
+"dec.resblocks.N.convs2.M" → "dec.resblock_N.c2_M"
+
+// Encoder
+"enc_p.encoder.attn_layers.N" → "enc_p.encoder.attn_N"
+"enc_p.encoder.norm_layers_1.N" → "enc_p.encoder.norm1_N"
+"enc_p.encoder.norm_layers_2.N" → "enc_p.encoder.norm2_N"
+"enc_p.encoder.ffn_layers.N" → "enc_p.encoder.ffn_N"
+
+// Flow (skip Flip modules at odd indices)
+"flow.flows.0" → "flow.flow_0"  // PyTorch index 0 → Swift index 0
+"flow.flows.2" → "flow.flow_1"  // PyTorch index 2 → Swift index 1
+"flow.flows.4" → "flow.flow_2"  // etc.
+
+// LayerNorm parameters
+".gamma" → ".weight"
+".beta" → ".bias"
+```
+
+### 5. Upsample Weight Transposition (CRITICAL)
+
+**Bug**: ConvTranspose weights need different transposition than regular Conv weights.
+
+```swift
+if k.contains(".up_") || k.contains(".ups.") {
+    val = val.transposed(axes: [1, 2, 0])  // ConvTranspose: (In, Out, K) → (Out, K, In)
+} else {
+    val = val.transposed(axes: [0, 2, 1])  // Regular Conv: (Out, In, K) → (Out, K, In)
+}
+```
+
+**File**: `PthConverter.swift`
+
+### 6. Named Properties vs Arrays (CRITICAL - Weights won't load)
+
+**Bug**: MLX Swift's `update(parameters:)` only works with named properties, NOT arrays.
+
+**Wrong**:
+```swift
+var flows: [ResidualCouplingLayer] = []  // Weights WON'T LOAD!
+```
+
+**Correct**:
+```swift
+let flow_0: ResidualCouplingLayer
+let flow_1: ResidualCouplingLayer
+let flow_2: ResidualCouplingLayer
+let flow_3: ResidualCouplingLayer
+```
+
+**Files**: `Synthesizer.swift`, `RVCModel.swift`
+
+## Tensor Format Reference
+
+| Framework | Conv1d Data | Conv1d Weight |
+|-----------|-------------|---------------|
+| PyTorch | (B, C, T) | (Out, In, K) |
+| MLX Swift | (B, T, C) | (Out, K, In) |
+
+**Always transpose at module boundaries**:
+```swift
+// Input from PyTorch format
+let mlxInput = pytorchInput.transposed(0, 2, 1)  // (B, C, T) → (B, T, C)
+
+// Output to PyTorch format
+let pytorchOutput = mlxOutput.transposed(0, 2, 1)  // (B, T, C) → (B, C, T)
+```
+
+## Model Files Location
+
+- **Bundled Models**: `RVCNativePackage/Sources/RVCNativeFeature/Assets/`
+- **User Models**: App Documents directory
+- **Source of Truth**: `/Users/mcruz/Library/Application Support/Replay/com.replay.Replay/models/`
+
+## Parity Results Achieved
+
+| Model | Spectrogram Correlation |
+|-------|------------------------|
+| Drake | 92.9% |
+| Juice WRLD | 86.6% |
+| Eminem Modern | 94.4% |
+| Bob Marley | 93.5% |
+| Slim Shady | 91.9% |
+| **Average** | **91.8%** |
+
+## Related Documentation
+
+- `Demos/iOS/AUDIO_QUALITY_FIX.md` - Detailed fix history
+- `docs/MLX_PYTHON_SWIFT_DIFFERENCES.md` - API differences
+- `docs/PYTORCH_MLX_SWIFT_DIFFERENCES.md` - Conversion guide
+- `docs/IOS_DEVELOPMENT.md` - Complete iOS implementation status

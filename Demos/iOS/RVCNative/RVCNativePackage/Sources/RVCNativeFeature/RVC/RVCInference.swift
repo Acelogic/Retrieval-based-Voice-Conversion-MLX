@@ -31,7 +31,17 @@ import MLXNN
             log("RVCInference: Running on Simulator, forced CPU device.")
             #endif
         }
-        
+
+        /// Unload all models to free memory
+        public func unloadModels() {
+            log("RVCInference: Unloading models...")
+            hubertModel = nil
+            synthesizer = nil
+            rmvpe = nil
+            status = "Idle"
+            log("RVCInference: Models unloaded.")
+        }
+
         public func loadWeights(hubertURL: URL, modelURL: URL, rmvpeURL: URL? = nil) async throws {
             DispatchQueue.main.async { self.status = "Loading models..." }
             
@@ -263,7 +273,11 @@ import MLXNN
             // DEBUG: Show sample of remapped resblock keys
             let resblockKeys = synthParams.keys.filter { $0.contains("resblock_0.c1_0") }.sorted()
             log("DEBUG: Resblock_0.c1_0 keys after remapping: \(resblockKeys)")
-            
+
+            // DEBUG: Show all NSF (m_source) related keys
+            let nsfKeys = synthParams.keys.filter { $0.contains("m_source") }.sorted()
+            log("DEBUG: All m_source (NSF) keys in model: \(nsfKeys)")
+
             // 5. CRITICAL: Fuse weight normalization for ConvTransposed1d layers
             // PyTorch weight normalization: weight = g * (v / ||v||)
             // where g is weight_g and v is weight_v
@@ -330,6 +344,20 @@ import MLXNN
                 log("DEBUG: synthParams[enc_p.emb_phone.weight] NOT FOUND!")
             }
 
+            // DEBUG: Check NSF module weights BEFORE loading
+            if let nsfWeight = synthParams["dec.m_source.l_linear.weight"] {
+                MLX.eval(nsfWeight)
+                log("DEBUG: synthParams[dec.m_source.l_linear.weight] BEFORE update: shape=\(nsfWeight.shape), range=[\(nsfWeight.min().item(Float.self))...\(nsfWeight.max().item(Float.self))]")
+            } else {
+                log("DEBUG: synthParams[dec.m_source.l_linear.weight] NOT FOUND - NSF will use init weights!")
+            }
+            if let nsfBias = synthParams["dec.m_source.l_linear.bias"] {
+                MLX.eval(nsfBias)
+                log("DEBUG: synthParams[dec.m_source.l_linear.bias] BEFORE update: shape=\(nsfBias.shape), value=\(nsfBias.asArray(Float.self))")
+            } else {
+                log("DEBUG: synthParams[dec.m_source.l_linear.bias] NOT FOUND - NSF will use init bias!")
+            }
+
             self.synthesizer?.update(parameters: ModuleParameters.unflattened(synthParams))
             self.synthesizer?.train(false)  // CRITICAL: Set to eval mode (disables Dropout, uses BatchNorm running stats)
             log("RVCInference: Successfully loaded Synthesizer with \(synthParams.count) weight keys")
@@ -357,6 +385,17 @@ import MLXNN
                 }
                 let flowIn0W = synth.flow.flow_0.enc.in_layer_0.weight
                 log("DEBUG: flow.flow_0.enc.in_layer_0.weight: shape=\(flowIn0W.shape), range=[\(flowIn0W.min().item(Float.self))...\(flowIn0W.max().item(Float.self))]")
+
+                // DEBUG: Check NSF module weights AFTER loading
+                let nsfW = synth.dec.m_source.l_linear.weight
+                MLX.eval(nsfW)
+                log("DEBUG: dec.m_source.l_linear.weight AFTER load: shape=\(nsfW.shape), values=\(nsfW.asArray(Float.self))")
+                if let nsfB = synth.dec.m_source.l_linear.bias {
+                    MLX.eval(nsfB)
+                    log("DEBUG: dec.m_source.l_linear.bias AFTER load: shape=\(nsfB.shape), values=\(nsfB.asArray(Float.self))")
+                } else {
+                    log("DEBUG: dec.m_source.l_linear.bias is nil (no bias)")
+                }
             }
             
             // 3. Load RMVPE (Optional)
@@ -451,7 +490,7 @@ import MLXNN
             DispatchQueue.main.async { self.status = "Models Loaded" }
         }
         
-        public func infer(audioURL: URL, outputURL: URL) async {
+        public func infer(audioURL: URL, outputURL: URL, volumeEnvelope: Float = 1.0) async {
             do {
                 DispatchQueue.main.async { self.status = "Loading Audio..." }
                 
@@ -504,9 +543,15 @@ import MLXNN
                 }
                 
                 MLX.eval(finalOutput)
-                
+
+                // Apply volume envelope scaling
+                if volumeEnvelope != 1.0 {
+                    finalOutput = finalOutput * volumeEnvelope
+                    MLX.eval(finalOutput)
+                }
+
                 let outputSampleRate: Double = Double(self.modelSampleRate)
-                
+
                 log("RVCInference: Saving \(finalOutput.size) samples to \(outputURL.path)")
                 try AudioProcessor.shared.saveAudio(array: finalOutput, url: outputURL, sampleRate: outputSampleRate)
                 
@@ -652,6 +697,7 @@ import MLXNN
                 return "Inference completed. No reference provided for comparison."
             }
 
+            #if os(macOS)
             let task = Process()
             task.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
             task.arguments = [
@@ -673,6 +719,10 @@ import MLXNN
             }
 
             return output
+            #else
+            // Process is not available on iOS
+            return "Inference completed. Reference comparison not available on iOS (reference: \(refURL.lastPathComponent))."
+            #endif
         }
         
         /// Apply high-pass filter: Butterworth 5th order, 48Hz cut-off, 16kHz sample rate

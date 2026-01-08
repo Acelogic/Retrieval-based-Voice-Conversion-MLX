@@ -3,6 +3,39 @@ import MLX
 import AVFoundation
 import RVCNativeFeature
 import UniformTypeIdentifiers
+import UIKit
+
+// MARK: - Document Picker Wrapper
+struct DocumentPicker: UIViewControllerRepresentable {
+    let contentTypes: [UTType]
+    let onPick: (URL) -> Void
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: contentTypes)
+        picker.delegate = context.coordinator
+        picker.allowsMultipleSelection = false
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onPick: onPick)
+    }
+
+    class Coordinator: NSObject, UIDocumentPickerDelegate {
+        let onPick: (URL) -> Void
+
+        init(onPick: @escaping (URL) -> Void) {
+            self.onPick = onPick
+        }
+
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            guard let url = urls.first else { return }
+            onPick(url)
+        }
+    }
+}
 
 // MARK: - Waveform View Component
 struct WaveformView: View {
@@ -155,7 +188,14 @@ struct ContentView: View {
     @State private var selectedModel: String = "Select Model"
     @State private var statusMessage: String = "Ready"
     @State private var isProcessing: Bool = false
-    @State private var isImporting: Bool = false
+
+    enum ImportType: Identifiable {
+        case model
+        case audio
+
+        var id: Self { self }
+    }
+    @State private var activeImport: ImportType? = nil
     @State private var logs: [String] = []
     @State private var volumeEnvelope: Float = 1.0 // Default 1.0 (no change)
     
@@ -326,12 +366,23 @@ struct ContentView: View {
                  statusMessage = "Recorded: \(url.lastPathComponent)"
              }
         }
-        .fileImporter(
-            isPresented: $isImporting,
-            allowedContentTypes: [UTType(filenameExtension: "safetensors")!, UTType(filenameExtension: "npz")!, UTType(filenameExtension: "pth")!, UTType.zip],
-            allowsMultipleSelection: false
-        ) { result in
-             handleFileImport(result: result)
+        .sheet(item: $activeImport) { importType in
+            switch importType {
+            case .model:
+                DocumentPicker(
+                    contentTypes: [UTType(filenameExtension: "safetensors")!, UTType(filenameExtension: "npz")!, UTType(filenameExtension: "pth")!, UTType.zip]
+                ) { url in
+                    activeImport = nil
+                    handleFileImportURL(url: url)
+                }
+            case .audio:
+                DocumentPicker(
+                    contentTypes: [UTType.mp3, UTType.wav]
+                ) { url in
+                    activeImport = nil
+                    handleAudioFileImportURL(url: url)
+                }
+            }
         }
         .alert(alertTitle, isPresented: $showAlert) {
             Button("OK", role: .cancel) { }
@@ -576,7 +627,7 @@ struct ContentView: View {
                         .foregroundStyle(isEditMode ? .green : .cyan)
                 }
                 
-                Button(action: { isImporting = true }) {
+                Button(action: { activeImport = .model }) {
                     Image(systemName: "plus")
                         .font(.headline)
                         .padding(10)
@@ -634,7 +685,7 @@ struct ContentView: View {
                 
                 // Add New Tile
                 if !isEditMode {
-                    Button(action: { isImporting = true }) {
+                    Button(action: { activeImport = .model }) {
                         VStack(spacing: 12) {
                             Image(systemName: "plus.circle.fill")
                                 .font(.system(size: 30))
@@ -763,7 +814,7 @@ struct ContentView: View {
         Group {
             // Actions
             Button(action: {
-                isImporting = true
+                activeImport = .audio
             }) {
                 HStack {
                     Image(systemName: "waveform.circle")
@@ -1318,7 +1369,122 @@ struct ContentView: View {
             log("Import error: \(error)")
         }
     }
-    
+
+    func handleAudioFileImport(result: Result<[URL], Error>) {
+        do {
+            guard let selectedFile: URL = try result.get().first else { return }
+            handleAudioFileImportURL(url: selectedFile)
+        } catch {
+            statusMessage = "Error: \(error.localizedDescription)"
+            log("Audio import error: \(error)")
+        }
+    }
+
+    func handleFileImportURL(url selectedFile: URL) {
+        // Check if .pth or .zip
+        if selectedFile.pathExtension.lowercased() == "pth" || selectedFile.pathExtension.lowercased() == "zip" {
+            alertTitle = "Import Failed"
+            statusMessage = selectedFile.pathExtension.lowercased() == "zip" ? "Inspecting zip archive..." : "Converting model archive..."
+
+            let accessSucceeded = selectedFile.startAccessingSecurityScopedResource()
+            if !accessSucceeded {
+                statusMessage = "Access denied"
+                return
+            }
+
+            Task {
+                defer { selectedFile.stopAccessingSecurityScopedResource() }
+
+                await MainActor.run {
+                    isConverting = true
+                    conversionProgress = 0.0
+                }
+
+                do {
+                    let arrays = try PthConverter.shared.convert(url: selectedFile) { progress, msg in
+                        Task { @MainActor in
+                            self.conversionProgress = progress
+                            self.statusMessage = msg
+                        }
+                    }
+
+                    let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                    let name = selectedFile.deletingPathExtension().lastPathComponent
+                    let dest = docs.appendingPathComponent(name + ".safetensors")
+
+                    try MLX.save(arrays: arrays, url: dest)
+
+                    await MainActor.run {
+                        statusMessage = "Converted & Imported: \(name)"
+                        log("Converted model saved to \(dest.path)")
+                        isConverting = false
+                        conversionProgress = 1.0
+                        refreshImportedModels()
+                    }
+                } catch {
+                    await MainActor.run {
+                        statusMessage = "Conversion Failed: \(error.localizedDescription)"
+                        log("Conversion error: \(error)")
+
+                        alertMessage = "Conversion Failed.\n\nError: \(error.localizedDescription)"
+                        showAlert = true
+                        isConverting = false
+                    }
+                }
+            }
+            return
+        }
+
+        if selectedFile.startAccessingSecurityScopedResource() {
+            defer { selectedFile.stopAccessingSecurityScopedResource() }
+
+            let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            let dest = docs.appendingPathComponent(selectedFile.lastPathComponent)
+
+            if FileManager.default.fileExists(atPath: dest.path) {
+                try? FileManager.default.removeItem(at: dest)
+            }
+
+            do {
+                try FileManager.default.copyItem(at: selectedFile, to: dest)
+                statusMessage = "Imported: \(selectedFile.lastPathComponent)"
+                log("Imported model to \(dest.path)")
+                refreshImportedModels()
+            } catch {
+                statusMessage = "Error: \(error.localizedDescription)"
+                log("Import error: \(error)")
+            }
+        } else {
+            statusMessage = "Access denied"
+        }
+    }
+
+    func handleAudioFileImportURL(url selectedFile: URL) {
+        if selectedFile.startAccessingSecurityScopedResource() {
+            defer { selectedFile.stopAccessingSecurityScopedResource() }
+
+            let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            let dest = docs.appendingPathComponent(selectedFile.lastPathComponent)
+
+            if FileManager.default.fileExists(atPath: dest.path) {
+                try? FileManager.default.removeItem(at: dest)
+            }
+
+            do {
+                try FileManager.default.copyItem(at: selectedFile, to: dest)
+                self.inputURL = dest
+                statusMessage = "Loaded: \(selectedFile.lastPathComponent)"
+                log("Loaded audio file: \(dest.path)")
+                originalWaveform = AudioWaveformExtractor.extractSamples(from: dest)
+            } catch {
+                statusMessage = "Error: \(error.localizedDescription)"
+                log("Audio import error: \(error)")
+            }
+        } else {
+            statusMessage = "Access denied"
+        }
+    }
+
     func log(_ message: String) {
         print("DEBUG: \(message)") // Keep in console
         DispatchQueue.main.async {
