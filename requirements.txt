@@ -44,3 +44,10 @@ certifi; sys_platform == 'darwin'
 antlr4-python3-runtime
 edge-tts
 webrtcvad
+
+# Pitch detection
+pyworld>=0.3.4
+
+# Testing
+pytest>=7.0.0
+pytest-timeout>=2.0.0
