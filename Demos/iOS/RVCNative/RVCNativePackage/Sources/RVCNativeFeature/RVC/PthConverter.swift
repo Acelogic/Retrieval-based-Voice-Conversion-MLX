@@ -16,9 +16,10 @@ public final class PthConverter: Sendable {
     
     /// Converts a .pth file (PyTorch zip archive) to an MLX-compatible Dictionary of arrays.
     /// - Parameter url: URL to the .pth file
+    /// - Parameter copyIndexTo: Optional directory to copy any found .index files to.
     /// - Parameter progress: Closure to report progress (0.0 to 1.0) and status message.
     /// - Returns: A dictionary of [String: MLXArray] ready to be saved or used.
-    public func convert(url: URL, progress: (@Sendable (Double, String) -> Void)? = nil) throws -> [String: MLXArray] {
+    public func convert(url: URL, copyIndexTo: URL? = nil, progress: (@Sendable (Double, String) -> Void)? = nil) throws -> [String: MLXArray] {
         // 1. Unzip to temp
         progress?(0.05, "Extracting archive...")
         let fm = FileManager.default
@@ -34,6 +35,7 @@ public final class PthConverter: Sendable {
         var dataPklUrl: URL?
         var storageRoot: URL = tempDir
         var modelFiles: [URL] = []
+        var indexFiles: [URL] = []
         
         // Log all files for transparency
         if let enumerator = fm.enumerator(at: tempDir, includingPropertiesForKeys: [.isRegularFileKey]) {
@@ -46,9 +48,28 @@ public final class PthConverter: Sendable {
                     modelFiles.append(fileURL)
                 } else if fileURL.pathExtension.lowercased() == "pth" {
                     modelFiles.append(fileURL)
+                } else if fileURL.pathExtension.lowercased() == "index" {
+                    indexFiles.append(fileURL)
                 }
             }
             print("-------------------------")
+        }
+        
+        // Copy index files if requested
+        if let destDir = copyIndexTo, !indexFiles.isEmpty {
+            for indexFile in indexFiles {
+                let dest = destDir.appendingPathComponent(indexFile.lastPathComponent)
+                do {
+                    if fm.fileExists(atPath: dest.path) {
+                        try fm.removeItem(at: dest)
+                    }
+                    try fm.copyItem(at: indexFile, to: dest)
+                    progress?(0.12, "Copied index file: \(indexFile.lastPathComponent)")
+                    print("PthConverter: Copied index to \(dest.path)")
+                } catch {
+                    print("PthConverter: Failed to copy index file: \(error)")
+                }
+            }
         }
         
         // Helper to find data.pkl in a model URL (might be a directory or a .pth zip)

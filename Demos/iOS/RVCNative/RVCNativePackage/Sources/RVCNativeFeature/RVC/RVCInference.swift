@@ -57,7 +57,15 @@ import MLXNN
         public func loadIndex(url: URL, rate: Float = 0.75) throws {
             log("RVCInference: Loading index from \(url.lastPathComponent)")
             let manager = IndexManager()
-            try manager.load(url: url)
+            
+            // Capture self strongly or weakly? 
+            // Since this is synchronous (load throws), we can just pass the closure.
+            // But log is on MainActor? No, print is safe. 
+            // Our internal log dispatches to main async.
+            try manager.load(url: url, logger: { [weak self] msg in
+                self?.log(msg)
+            })
+            
             self.indexManager = manager
             self.indexRate = rate
             log("RVCInference: Index loaded with \(manager.count) vectors, rate=\(rate)")

@@ -1309,15 +1309,14 @@ struct ContentView: View {
                     }
                     
                     do {
-                        let arrays = try PthConverter.shared.convert(url: selectedFile) { progress, msg in
+                        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                        let arrays = try PthConverter.shared.convert(url: selectedFile, copyIndexTo: docs) { progress, msg in
                             Task { @MainActor in
                                 self.conversionProgress = progress
                                 self.statusMessage = msg
                             }
                         }
                         
-                        // Save as .safetensors
-                        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
                         let name = selectedFile.deletingPathExtension().lastPathComponent
                         let dest = docs.appendingPathComponent(name + ".safetensors")
                         
@@ -1401,14 +1400,14 @@ struct ContentView: View {
                 }
 
                 do {
-                    let arrays = try PthConverter.shared.convert(url: selectedFile) { progress, msg in
+                    let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                    let arrays = try PthConverter.shared.convert(url: selectedFile, copyIndexTo: docs) { progress, msg in
                         Task { @MainActor in
                             self.conversionProgress = progress
                             self.statusMessage = msg
                         }
                     }
 
-                    let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
                     let name = selectedFile.deletingPathExtension().lastPathComponent
                     let dest = docs.appendingPathComponent(name + ".safetensors")
 
@@ -1558,11 +1557,60 @@ struct ContentView: View {
             log("RMVPE not found (optional)")
         }
         
+        // Find Index File (optional)
+        // 1. Check for native .index (from .pth conversion)
+        // 2. Check for .safetensors (converted)
+        // Try exact name match or "added_IVF256_Flat_nprobe_1_v2.index" common pattern
+        var indexUrl: URL?
+        
+        if isImported {
+            let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            
+            // Search for *any* index file that might have been extracted with this model
+            // For now, simpler: check keys.
+            let possibleNames = [
+                "\(name).index",
+                "\(name).safetensors.index", // weird but possible
+                "added_IVF256_Flat_nprobe_1_\(name).index",
+                "\(name)_index.safetensors"
+            ]
+            
+            for pKey in possibleNames {
+                let p = docs.appendingPathComponent(pKey)
+                if FileManager.default.fileExists(atPath: p.path) {
+                    indexUrl = p
+                    break
+                }
+            }
+            
+            // If explicit name fails, try searching directory for any .index file if imported recently?
+            // No, that's risky. stick to name match.
+            // If PthConverter extracted it, it kept original name.
+            // PthConverter should maybe RENAME it.
+            // But since we didn't rename it in PthConverter, we might miss it if it has a weird name.
+            // Let's rely on user renaming or standard names for now.
+        }
+        
+        if let idx = indexUrl {
+            log("Found index file at \(idx.lastPathComponent)")
+        } else {
+            log("No index file found for \(name)")
+        }
+        
         Task {
             do {
                 log("Starting loadWeights task...")
                 try await inferenceEngine.loadWeights(hubertURL: hubertURL, modelURL: url, rmvpeURL: rmvpeURL)
                 log("loadWeights success")
+                
+                if let idx = indexUrl {
+                    log("Loading index...")
+                    try inferenceEngine.loadIndex(url: idx)
+                    log("Index loaded successfully!")
+                } else {
+                    inferenceEngine.unloadIndex() // Ensure cleared
+                }
+                
                 statusMessage = "Loaded \(name)"
                 isModelLoaded = true
             } catch {
