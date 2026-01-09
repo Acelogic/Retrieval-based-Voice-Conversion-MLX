@@ -91,7 +91,7 @@ class WaveNet(nn.Module):
                     i * 2 * self.hidden_channels : (i + 1) * 2 * self.hidden_channels,
                 ]
 
-            acts = fused_add_tanh_sigmoid_multiply(x_in, g_l, self.n_channels_tensor)
+            acts = fused_add_tanh_sigmoid_multiply(x_in, g_l, self.hidden_channels)
             acts = self.drop(acts)
 
             res_skip_acts = res_skip_layer(acts)

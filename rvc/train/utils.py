@@ -188,8 +188,10 @@ def plot_spectrogram_to_numpy(spectrogram):
     plt.tight_layout()
 
     fig.canvas.draw()
-    data = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-    data = data.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+    # Use buffer_rgba() for newer matplotlib versions (tostring_rgb deprecated)
+    buf = fig.canvas.buffer_rgba()
+    data = np.asarray(buf, dtype=np.uint8)
+    data = data[:, :, :3]  # Remove alpha channel to get RGB
     plt.close(fig)
     return data
 

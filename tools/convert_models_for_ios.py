@@ -30,7 +30,15 @@ except ImportError:
     FAISS_AVAILABLE = False
 
 def fuse_weight_norm(state_dict):
-    """Fuse weight normalization (weight_g, weight_v) into single weight tensor"""
+    """Fuse weight normalization (weight_g, weight_v) into single weight tensor.
+
+    CRITICAL: The norm must be computed per output channel (preserving dim 0),
+    NOT globally across the entire tensor. This matches convert_rvc_model.py.
+
+    For Conv1d [Out, In, K]: norm over dims (1, 2) → result shape [Out, 1, 1]
+    For Conv2d [Out, In, H, W]: norm over dims (1, 2, 3) → result shape [Out, 1, 1, 1]
+    For Linear [Out, In]: norm over dim 1 → result shape [Out, 1]
+    """
     fused = {}
     processed_bases = set()
 
@@ -43,11 +51,29 @@ def fuse_weight_norm(state_dict):
                 weight_g = state_dict[key]
                 weight_v = state_dict[v_key]
 
-                # Fuse: weight = weight_g * (weight_v / ||weight_v||)
-                # For Conv1d, weight_v shape is [Out, In, K] or similar
-                # Norm is typically computed along dim 0
-                norm = torch.linalg.norm(weight_v, dim=0, keepdim=True)
+                # CORRECT: Compute norm per output channel (dim 0 is preserved)
+                # This matches the formula: w = g * (v / ||v||) where ||v|| is per-channel
+                if weight_v.ndim == 3:
+                    # Conv1d: [Out, In, K] - norm over (In, K)
+                    norm = torch.linalg.norm(weight_v, dim=(1, 2), keepdim=True)
+                elif weight_v.ndim == 4:
+                    # Conv2d: [Out, In, H, W] - norm over (In, H, W)
+                    norm = torch.linalg.norm(weight_v, dim=(1, 2, 3), keepdim=True)
+                elif weight_v.ndim == 2:
+                    # Linear: [Out, In] - norm over In
+                    norm = torch.linalg.norm(weight_v, dim=1, keepdim=True)
+                else:
+                    # 1D or other - full norm
+                    norm = torch.linalg.norm(weight_v, keepdim=True)
+
                 weight_normalized = weight_v / (norm + 1e-12)
+
+                # Ensure weight_g broadcasts correctly
+                if weight_g.ndim == 1:
+                    target_shape = [1] * weight_v.ndim
+                    target_shape[0] = weight_g.shape[0]
+                    weight_g = weight_g.reshape(target_shape)
+
                 weight_fused = weight_g * weight_normalized
 
                 fused[base + '.weight'] = weight_fused

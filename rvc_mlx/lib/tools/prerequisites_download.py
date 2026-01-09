@@ -20,6 +20,22 @@ pretraineds_hifigan_list = [
         ],
     ),
 ]
+
+# TITAN community pretrain - recommended by AI Hub for general purpose training
+# Fine-tuned from RVC V2, trained on 11.15 hours of high-quality data
+titan_pretrains_list = [
+    (
+        "titan/",
+        [
+            "f0D32k.pth",
+            "f0D40k.pth",
+            "f0D48k.pth",
+            "f0G32k.pth",
+            "f0G40k.pth",
+            "f0G48k.pth",
+        ],
+    ),
+]
 pretraineds_refinegan_list = [
     (
         "refinegan/",
@@ -38,6 +54,7 @@ executables_list = [
 folder_mapping_list = {
     "pretrained_v2/": "rvc/models/pretraineds/hifi-gan/",
     "refinegan/": "rvc/models/pretraineds/refinegan/",
+    "titan/": "rvc/models/pretraineds/titan/",
     "embedders/contentvec/": "rvc/models/embedders/contentvec/",
     "predictors/": "rvc/models/predictors/",
     "formant/": "rvc/models/formant/",
@@ -119,6 +136,7 @@ def calculate_total_size(
     pretraineds_hifigan,
     models,
     exe,
+    titan=False,
 ):
     """
     Calculate the total size of all files to be downloaded based on selected categories.
@@ -131,6 +149,8 @@ def calculate_total_size(
         total_size += get_file_size_if_missing(executables_list)
     total_size += get_file_size_if_missing(pretraineds_hifigan)
     total_size += get_file_size_if_missing(pretraineds_refinegan_list)
+    if titan:
+        total_size += get_file_size_if_missing(titan_pretrains_list)
     return total_size
 
 
@@ -138,14 +158,22 @@ def prequisites_download_pipeline(
     pretraineds_hifigan,
     models,
     exe,
+    titan=False,
 ):
     """
     Manage the download pipeline for different categories of files.
+
+    Args:
+        pretraineds_hifigan: Download base HiFi-GAN pretrains
+        models: Download RMVPE, FCPE, and ContentVec models
+        exe: Download executables (Windows only)
+        titan: Download TITAN community pretrain (recommended for training)
     """
     total_size = calculate_total_size(
         pretraineds_hifigan_list if pretraineds_hifigan else [],
         models,
         exe,
+        titan,
     )
 
     if total_size > 0:
@@ -163,5 +191,8 @@ def prequisites_download_pipeline(
             if pretraineds_hifigan:
                 download_mapping_files(pretraineds_hifigan_list, global_bar)
                 download_mapping_files(pretraineds_refinegan_list, global_bar)
+            if titan:
+                print("Downloading TITAN community pretrain (recommended for training)...")
+                download_mapping_files(titan_pretrains_list, global_bar)
     else:
-        pass
+        print("All files already downloaded.")

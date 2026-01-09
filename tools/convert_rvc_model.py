@@ -9,6 +9,111 @@ import argparse
 import json
 import shutil
 
+def remap_discriminator_key(key):
+    """
+    Remap PyTorch discriminator key names to MLX discriminator key names.
+
+    PyTorch structure:
+    - discriminators.0 = DiscriminatorS
+    - discriminators.1-N = DiscriminatorP(period)
+
+    MLX structure:
+    - discriminator_s = DiscriminatorS (with grouped convolutions for conv_1-4)
+    - discriminator_p_0, discriminator_p_1, ... = DiscriminatorP
+    """
+    # DiscriminatorS: discriminators.0.convs.N -> discriminator_s.conv_N
+    # Note: conv_1 through conv_4 use grouped convolutions - handled in split function
+    match = re.search(r"discriminators\.0\.convs\.(\d+)\.(.+)", key)
+    if match:
+        idx, rest = match.groups()
+        return f"discriminator_s.conv_{idx}.{rest}"
+
+    # DiscriminatorS: discriminators.0.conv_post -> discriminator_s.conv_post
+    match = re.search(r"discriminators\.0\.conv_post\.(.+)", key)
+    if match:
+        rest = match.groups()[0]
+        return f"discriminator_s.conv_post.{rest}"
+
+    # DiscriminatorP: discriminators.N.convs.M -> discriminator_p_{N-1}.conv_M
+    match = re.search(r"discriminators\.(\d+)\.convs\.(\d+)\.(.+)", key)
+    if match:
+        disc_idx, conv_idx, rest = match.groups()
+        disc_idx = int(disc_idx)
+        if disc_idx > 0:  # Skip discriminator 0 (DiscriminatorS)
+            p_idx = disc_idx - 1
+            return f"discriminator_p_{p_idx}.conv_{conv_idx}.{rest}"
+
+    # DiscriminatorP: discriminators.N.conv_post -> discriminator_p_{N-1}.conv_post
+    match = re.search(r"discriminators\.(\d+)\.conv_post\.(.+)", key)
+    if match:
+        disc_idx, rest = match.groups()
+        disc_idx = int(disc_idx)
+        if disc_idx > 0:
+            p_idx = disc_idx - 1
+            return f"discriminator_p_{p_idx}.conv_post.{rest}"
+
+    return key
+
+
+# DiscriminatorS grouped convolution configuration
+# conv_idx: (in_channels, out_channels, groups)
+DISCRIMINATOR_S_GROUPED_CONVS = {
+    1: (16, 64, 4),
+    2: (64, 256, 16),
+    3: (256, 1024, 64),
+    4: (1024, 1024, 256),
+}
+
+
+def split_grouped_conv_weights(base_key, weight, bias):
+    """
+    Split grouped convolution weights into separate per-group weights for MLX.
+
+    PyTorch grouped conv: weight shape (out_channels, in_channels/groups, kernel_size)
+    MLX GroupedConv1d: separate conv_i for each group with shape (out/groups, kernel, in/groups)
+
+    Returns list of (key, weight) pairs for the split weights.
+    """
+    # Check if this is a grouped conv in DiscriminatorS
+    match = re.search(r"discriminator_s\.conv_(\d+)\.", base_key)
+    if not match:
+        return None
+
+    conv_idx = int(match.group(1))
+    if conv_idx not in DISCRIMINATOR_S_GROUPED_CONVS:
+        return None
+
+    in_channels, out_channels, groups = DISCRIMINATOR_S_GROUPED_CONVS[conv_idx]
+    out_per_group = out_channels // groups
+
+    # Split weights by group
+    # PyTorch weight: (out_channels, in_channels/groups, kernel_size)
+    # Each group uses output channels [g*out_per_group : (g+1)*out_per_group]
+    results = []
+
+    if weight is not None:
+        # Weight has shape (out_channels, kernel_size, in_per_group) in MLX format
+        # (already transposed from PyTorch format by caller)
+        for g in range(groups):
+            start = g * out_per_group
+            end = (g + 1) * out_per_group
+            group_weight = weight[start:end]  # (out_per_group, kernel, in_per_group)
+            new_key = base_key.replace(f"conv_{conv_idx}.", f"conv_{conv_idx}.conv_{g}.")
+            results.append((new_key, group_weight))
+
+    if bias is not None:
+        # Bias has shape (out_channels,) - split similarly
+        for g in range(groups):
+            start = g * out_per_group
+            end = (g + 1) * out_per_group
+            group_bias = bias[start:end]  # (out_per_group,)
+            new_key = base_key.replace(f"conv_{conv_idx}.", f"conv_{conv_idx}.conv_{g}.")
+            new_key = new_key.replace(".weight", ".bias")
+            results.append((new_key, group_bias))
+
+    return results
+
+
 def remap_key_name(key):
     """
     Remap PyTorch RVC key names to MLX RVC key names.
@@ -323,10 +428,195 @@ def convert_weights(model_path, output_path):
     else:
          print("Warning: No configuration found. Inference might use defaults which can lead to mismatches (e.g. 40k vs 48k).")
 
+def convert_discriminator_weights(model_path, output_path):
+    """
+    Convert discriminator weights from PyTorch to MLX format.
+
+    Args:
+        model_path: Path to input .pth discriminator model
+        output_path: Path to output .npz model
+    """
+    print(f"Loading PyTorch discriminator from {model_path}...")
+    try:
+        ckpt = torch.load(model_path, map_location="cpu", weights_only=True)
+    except FileNotFoundError:
+        print(f"Model not found at {model_path}")
+        return
+
+    # Handle different checkpoint formats
+    if "weight" in ckpt:
+        state_dict = ckpt["weight"]
+    elif "model" in ckpt:
+        state_dict = ckpt["model"]
+    elif "state_dict" in ckpt:
+        state_dict = ckpt["state_dict"]
+    else:
+        # Assume it's a raw state dict
+        state_dict = ckpt
+
+    print(f"Converting {len(state_dict)} discriminator tensors...")
+
+    # Group parameters by layer for weight norm fusion
+    layer_groups = {}
+
+    for key, val in state_dict.items():
+        if "num_batches_tracked" in key:
+            continue
+
+        val = val.cpu().detach().numpy()
+
+        # Determine suffix
+        if key.endswith(".weight"):
+            base = key[:-7]
+            type_ = "weight"
+        elif key.endswith(".weight_g"):
+            base = key[:-9]
+            type_ = "weight_g"
+        elif key.endswith(".weight_v"):
+            base = key[:-9]
+            type_ = "weight_v"
+        elif key.endswith(".bias"):
+            base = key[:-5]
+            type_ = "bias"
+        else:
+            base = key
+            type_ = "other"
+
+        if base not in layer_groups:
+            layer_groups[base] = {}
+        layer_groups[base][type_] = val
+
+    mlx_weights = {}
+
+    print(f"Processing {len(layer_groups)} discriminator layers...")
+
+    for base_key, params in layer_groups.items():
+        final_weight = None
+        final_bias = params.get("bias", None)
+
+        if "weight" in params:
+            final_weight = params["weight"]
+        elif "weight_g" in params and "weight_v" in params:
+            # Fuse weight norm
+            v = params["weight_v"]
+            g = params["weight_g"]
+
+            try:
+                if v.ndim == 3:
+                    # Conv1d: norm over (1, 2)
+                    norm_v = np.linalg.norm(v, axis=(1, 2), keepdims=True)
+                elif v.ndim == 4:
+                    # Conv2d: norm over (1, 2, 3)
+                    norm_v = np.linalg.norm(v, axis=(1, 2, 3), keepdims=True)
+                elif v.ndim == 2:
+                    # Linear
+                    norm_v = np.linalg.norm(v, axis=1, keepdims=True)
+                elif v.ndim == 1:
+                    # 1D: norm as scalar
+                    norm_v = np.linalg.norm(v, keepdims=True)
+                else:
+                    norm_v = np.linalg.norm(v, keepdims=True)
+            except ValueError as e:
+                print(f"  Warning: Cannot compute norm for {base_key} with shape {v.shape}, using simple norm")
+                norm_v = np.linalg.norm(v.flatten(), keepdims=True).reshape([1] * v.ndim)
+
+            if g.ndim == 1:
+                target_shape = [1] * v.ndim
+                target_shape[0] = g.shape[0]
+                g = g.reshape(target_shape)
+
+            final_weight = v * (g / (norm_v + 1e-8))
+        elif "other" in params:
+            final_weight = params["other"]
+
+        if final_weight is not None:
+            full_key = f"{base_key}.weight"
+            new_key = remap_discriminator_key(full_key)
+
+            val = final_weight
+            # Transpose for MLX
+            if val.ndim == 4:
+                # Conv2d: (Out, In, H, W) -> (Out, H, W, In)
+                val = val.transpose(0, 2, 3, 1)
+            elif val.ndim == 3:
+                # Conv1d: (Out, In, K) -> (Out, K, In)
+                val = val.transpose(0, 2, 1)
+
+            # Check if this is a grouped convolution that needs splitting
+            split_results = split_grouped_conv_weights(new_key, val, final_bias)
+            if split_results:
+                for split_key, split_val in split_results:
+                    mlx_weights[split_key] = mx.array(split_val)
+                continue  # Skip the normal bias handling below since it's handled in split
+
+            mlx_weights[new_key] = mx.array(val)
+
+        if final_bias is not None:
+            full_key = f"{base_key}.bias"
+            new_key = remap_discriminator_key(full_key)
+            mlx_weights[new_key] = mx.array(final_bias)
+
+    print(f"Converted {len(mlx_weights)} discriminator tensors.")
+
+    # Save
+    os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else ".", exist_ok=True)
+    mx.savez(output_path, **mlx_weights)
+    print(f"Saved discriminator weights to {output_path}")
+
+
+def convert_both(generator_path, discriminator_path, output_dir):
+    """
+    Convert both generator and discriminator models.
+
+    Args:
+        generator_path: Path to generator .pth
+        discriminator_path: Path to discriminator .pth
+        output_dir: Output directory for converted models
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Convert generator
+    gen_output = os.path.join(output_dir, "generator.npz")
+    convert_weights(generator_path, gen_output)
+
+    # Convert discriminator
+    disc_output = os.path.join(output_dir, "discriminator.npz")
+    convert_discriminator_weights(discriminator_path, disc_output)
+
+    print(f"\nConverted models saved to {output_dir}/")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Convert RVC PyTorch model to MLX")
-    parser.add_argument("model_path", type=str, help="Path to input .pth model")
-    parser.add_argument("output_path", type=str, help="Path to output .npz model")
-    
+    subparsers = parser.add_subparsers(dest="command", help="Conversion commands")
+
+    # Generator conversion (default behavior)
+    gen_parser = subparsers.add_parser("generator", help="Convert generator model")
+    gen_parser.add_argument("model_path", type=str, help="Path to input .pth model")
+    gen_parser.add_argument("output_path", type=str, help="Path to output .npz model")
+
+    # Discriminator conversion
+    disc_parser = subparsers.add_parser("discriminator", help="Convert discriminator model")
+    disc_parser.add_argument("model_path", type=str, help="Path to input .pth model")
+    disc_parser.add_argument("output_path", type=str, help="Path to output .npz model")
+
+    # Both models
+    both_parser = subparsers.add_parser("both", help="Convert both generator and discriminator")
+    both_parser.add_argument("--generator", "-g", type=str, required=True, help="Path to generator .pth")
+    both_parser.add_argument("--discriminator", "-d", type=str, required=True, help="Path to discriminator .pth")
+    both_parser.add_argument("--output-dir", "-o", type=str, required=True, help="Output directory")
+
     args = parser.parse_args()
-    convert_weights(args.model_path, args.output_path)
+
+    if args.command == "generator":
+        convert_weights(args.model_path, args.output_path)
+    elif args.command == "discriminator":
+        convert_discriminator_weights(args.model_path, args.output_path)
+    elif args.command == "both":
+        convert_both(args.generator, args.discriminator, args.output_dir)
+    else:
+        # Default: treat positional args as generator conversion (backward compat)
+        if len(sys.argv) >= 3:
+            convert_weights(sys.argv[1], sys.argv[2])
+        else:
+            parser.print_help()
