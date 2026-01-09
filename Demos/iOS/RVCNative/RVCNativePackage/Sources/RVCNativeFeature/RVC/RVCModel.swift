@@ -54,23 +54,70 @@ class ResBlock: Module {
         let convs1 = [c1_0, c1_1, c1_2]
         let convs2 = [c2_0, c2_1, c2_2]
 
-        // DEBUG: Check first conv weight
+        // DEBUG: Check conv weights in detail
         if debug {
-            print("DEBUG ResBlock: c1_0.conv.weight shape=\(c1_0.conv.weight.shape), range=[\(c1_0.conv.weight.min().item(Float.self))...\(c1_0.conv.weight.max().item(Float.self))]")
+            MLX.eval(x)
+            print("DEBUG ResBlock: INPUT shape=\(x.shape), range=[\(x.min().item(Float.self))...\(x.max().item(Float.self))]")
+
+            // Print weight statistics for ALL convolutions with full detail
+            for (i, c1) in convs1.enumerated() {
+                let w = c1.conv.weight
+                MLX.eval(w)
+                print("DEBUG ResBlock: c1_\(i).conv.weight shape=\(w.shape), range=[\(w.min().item(Float.self))...\(w.max().item(Float.self))], mean=\(w.mean().item(Float.self))")
+
+                // Print a few actual weight values to compare with Python
+                let wSlice = w[0, 0, 0..<5]  // First 5 values of first filter
+                MLX.eval(wSlice)
+                print("DEBUG ResBlock: c1_\(i) weight[0,0,:5] = \(wSlice.asArray(Float.self))")
+
+                if let b = c1.conv.bias {
+                    MLX.eval(b)
+                    print("DEBUG ResBlock: c1_\(i).conv.bias range=[\(b.min().item(Float.self))...\(b.max().item(Float.self))]")
+                }
+            }
+            for (i, c2) in convs2.enumerated() {
+                let w = c2.conv.weight
+                MLX.eval(w)
+                print("DEBUG ResBlock: c2_\(i).conv.weight shape=\(w.shape), range=[\(w.min().item(Float.self))...\(w.max().item(Float.self))], mean=\(w.mean().item(Float.self))")
+            }
         }
 
         var out = x
         for (idx, (c1, c2)) in zip(convs1, convs2).enumerated() {
             var xt = out
+            MLX.eval(xt)
+
             xt = leakyRelu(xt, negativeSlope: LRELU_SLOPE)
-            if debug && idx == 0 { print("DEBUG ResBlock: after lrelu1 range=[\(xt.min().item(Float.self))...\(xt.max().item(Float.self))]") }
+            MLX.eval(xt)
+            if debug {
+                print("DEBUG ResBlock[\(idx)]: after lrelu1 range=[\(xt.min().item(Float.self))...\(xt.max().item(Float.self))]")
+                // Print a few input values to c1
+                let xtSlice = xt[0, 0, 0..<5]
+                MLX.eval(xtSlice)
+                print("DEBUG ResBlock[\(idx)]: c1 input[0,0,:5] = \(xtSlice.asArray(Float.self))")
+            }
+
             xt = c1(xt)
-            if debug && idx == 0 { print("DEBUG ResBlock: after c1 range=[\(xt.min().item(Float.self))...\(xt.max().item(Float.self))]") }
+            MLX.eval(xt)
+            if debug {
+                print("DEBUG ResBlock[\(idx)]: after c1 range=[\(xt.min().item(Float.self))...\(xt.max().item(Float.self))]")
+                // Print a few output values from c1
+                let xtSlice = xt[0, 0, 0..<5]
+                MLX.eval(xtSlice)
+                print("DEBUG ResBlock[\(idx)]: c1 output[0,0,:5] = \(xtSlice.asArray(Float.self))")
+            }
+
             xt = leakyRelu(xt, negativeSlope: LRELU_SLOPE)
+            MLX.eval(xt)
+            if debug { print("DEBUG ResBlock[\(idx)]: after lrelu2 range=[\(xt.min().item(Float.self))...\(xt.max().item(Float.self))]") }
+
             xt = c2(xt)
-            if debug && idx == 0 { print("DEBUG ResBlock: after c2 range=[\(xt.min().item(Float.self))...\(xt.max().item(Float.self))]") }
+            MLX.eval(xt)
+            if debug { print("DEBUG ResBlock[\(idx)]: after c2 range=[\(xt.min().item(Float.self))...\(xt.max().item(Float.self))]") }
+
             out = out + xt
-            if debug && idx == 0 { print("DEBUG ResBlock: after residual range=[\(out.min().item(Float.self))...\(out.max().item(Float.self))]") }
+            MLX.eval(out)
+            if debug { print("DEBUG ResBlock[\(idx)]: after residual range=[\(out.min().item(Float.self))...\(out.max().item(Float.self))]") }
         }
         return out
     }
@@ -366,10 +413,11 @@ class Generator: Module {
 
             // Multi-ResBlocks
             var xs: MLXArray? = nil
-            for _ in 0..<3 { // 3 kernels
+            for j in 0..<3 { // 3 kernels (3, 7, 11)
                 let res = resblocks[resIdx]
-                let r = res(out, debug: i == 0 && resIdx == 0)  // Debug only first resblock
-                if i == 0 { print("DEBUG: resblock_\(resIdx) output: range=[\(r.min().item(Float.self))...\(r.max().item(Float.self))]") }
+                // Debug all 3 resblocks in first upsample stage to understand explosion
+                let r = res(out, debug: i == 0 && j == 0)  // Full debug on first resblock only
+                if i == 0 { print("DEBUG: resblock_\(resIdx) (kernel \([3, 7, 11][j])) output: range=[\(r.min().item(Float.self))...\(r.max().item(Float.self))]") }
                 if xs == nil { xs = r }
                 else { xs = xs! + r }
                 resIdx += 1

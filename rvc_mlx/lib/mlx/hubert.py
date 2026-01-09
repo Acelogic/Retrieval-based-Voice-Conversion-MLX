@@ -171,28 +171,33 @@ class HubertModel(nn.Module):
         # For "WithFinalProj"
         self.final_proj = nn.Linear(config.hidden_size, config.classifier_proj_size)
 
-    def __call__(self, input_values: mx.array, **kwargs) -> mx.array:
+    def __call__(self, input_values: mx.array, output_hidden_states: bool = False, **kwargs) -> mx.array:
         # input_values: (B, T_samples)
-        
+        # output_hidden_states: If True, return 768-dim hidden states instead of projected output
+
         extract_features = self.feature_extractor(input_values)
         print(f"DEBUG: Hubert Feature Extractor output stats: min {extract_features.min().item():.6f}, max {extract_features.max().item():.6f}, mean {extract_features.mean().item():.6f}")
 
         # extract_features = extract_features.transpose(0, 2, 1) # MLX Conv1d returns (N, L, C) already
-        
+
         hidden_states = self.feature_projection(extract_features)
         print(f"DEBUG: Hubert Projection output stats: min {hidden_states.min().item():.6f}, max {hidden_states.max().item():.6f}, mean {hidden_states.mean().item():.6f}")
-        
+
         # Encoder handles pos_embed, norm, dropout, layers
         hidden_states = self.encoder(hidden_states)
         print(f"DEBUG: Hubert Encoder output stats: min {hidden_states.min().item():.6f}, max {hidden_states.max().item():.6f}, mean {hidden_states.mean().item():.6f}")
         print(f"DEBUG: HubertModel output shape: {hidden_states.shape}")
-        
+
+        # Return 768-dim hidden states for training, or projected for inference
+        if output_hidden_states:
+            return hidden_states
+
         # Proj
         if self.config.classifier_proj_size != self.config.hidden_size:
             proj = self.final_proj(hidden_states)
         else:
             proj = hidden_states
-            
+
         return proj
 
 

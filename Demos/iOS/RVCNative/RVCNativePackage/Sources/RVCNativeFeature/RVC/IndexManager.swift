@@ -140,9 +140,10 @@ public class IndexManager {
         topkDistances = MLX.maximum(topkDistances, MLXArray(1e-6))
         
         // 4. Compute weights: 1 / distance^2 (inverse squared distance)
-        // Python: weight = np.square(1 / score)
-        // Note: FAISS returns distances (not squared), but we square the inverse
-        let weights = 1.0 / (topkDistances * topkDistances)  // (T, k)
+        // Python: weight = np.square(1 / score) where score = L2 distance
+        // Our topkDistances is already L2 squared (||q-v||^2), so:
+        // weight = 1 / topkDistances gives us 1/||q-v||^2 matching Python
+        let weights = 1.0 / topkDistances  // (T, k)
         
         // Normalize weights per frame
         let weightSums = MLX.sum(weights, axis: 1, keepDims: true)  // (T, 1)

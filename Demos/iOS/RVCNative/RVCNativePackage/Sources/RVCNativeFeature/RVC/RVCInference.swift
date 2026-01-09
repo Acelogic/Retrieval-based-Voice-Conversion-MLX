@@ -15,6 +15,8 @@ import MLXNN
         var hubertModel: HubertModel?
         var synthesizer: Synthesizer?
         var rmvpe: RMVPE?
+        var crepe: CREPE?
+        var dspPitch: DSPPitchExtractor?
         var indexManager: IndexManager?
         var indexRate: Float = 0.75
         var modelSampleRate: Int = 40000  // Detected from model config
@@ -40,6 +42,8 @@ import MLXNN
             hubertModel = nil
             synthesizer = nil
             rmvpe = nil
+            crepe = nil
+            dspPitch = nil
             indexManager?.unload()
             indexManager = nil
             status = "Idle"
@@ -78,7 +82,7 @@ import MLXNN
             log("RVCInference: Index unloaded.")
         }
 
-        public func loadWeights(hubertURL: URL, modelURL: URL, rmvpeURL: URL? = nil) async throws {
+        public func loadWeights(hubertURL: URL, modelURL: URL, rmvpeURL: URL? = nil, crepeURL: URL? = nil) async throws {
             DispatchQueue.main.async { self.status = "Loading models..." }
             
             // 1. Load Hubert
@@ -181,7 +185,43 @@ import MLXNN
                         }
                     }
                 }
+            } else {
+                log("RVCInference: No config JSON found, detecting from weights...")
             }
+
+            // CRITICAL: Detect/verify kernel sizes from actual weight shapes
+            // This ensures we use correct architecture even if JSON is missing or wrong
+            for i in 0..<4 {
+                let upKey = "dec.up_\(i).weight"
+                if let upWeight = modelWeights[upKey] {
+                    // Weight shape is (Out, K, In) in MLX format
+                    let detectedK = upWeight.shape[1]
+                    if detectedK != detectedKernelSizes[i] {
+                        log("RVCInference: ⚠️ Kernel mismatch for up_\(i): config=\(detectedKernelSizes[i]), weight=\(detectedK). Using weight value.")
+                        detectedKernelSizes[i] = detectedK
+
+                        // Also infer stride from kernel size for common HiFi-GAN patterns
+                        // kernel=24 typically means stride=12 (48kHz models)
+                        // kernel=20 typically means stride=10
+                        // kernel=16 typically means stride=10 (original 32kHz models)
+                        // kernel=4 typically means stride=2
+                        if i < 2 {  // Only adjust first two layers (which vary more)
+                            let inferredStride: Int
+                            switch detectedK {
+                            case 24: inferredStride = 12
+                            case 20: inferredStride = 10
+                            case 16: inferredStride = 10
+                            default: inferredStride = detectedUpsRates[i]  // Keep existing
+                            }
+                            if inferredStride != detectedUpsRates[i] {
+                                log("RVCInference: ⚠️ Inferring stride for up_\(i) from kernel=\(detectedK): stride=\(inferredStride)")
+                                detectedUpsRates[i] = inferredStride
+                            }
+                        }
+                    }
+                }
+            }
+            log("RVCInference: Final architecture - upsampleRates=\(detectedUpsRates), kernelSizes=\(detectedKernelSizes), sampleRate=\(detectedSR)")
 
             // Initialize Synthesizer with architecture from config
             self.synthesizer = Synthesizer(
@@ -408,9 +448,20 @@ import MLXNN
                     log("DEBUG: enc_p.emb_pitch.weight: shape=\(w.shape), range=[\(w.min().item(Float.self))...\(w.max().item(Float.self))]")
                 }
 
-                // Check Generator resblock weights
+                // Check Generator resblock weights - CRITICAL for detecting weight loading issues
                 let w0 = synth.dec.resblock_0.c1_0.conv.weight
-                log("DEBUG: resblock_0.c1_0.conv.weight (kernel=3): shape=\(w0.shape), range=[\(w0.min().item(Float.self))...\(w0.max().item(Float.self))]")
+                MLX.eval(w0)
+                log("DEBUG: resblock_0.c1_0.conv.weight (kernel=3): shape=\(w0.shape), range=[\(w0.min().item(Float.self))...\(w0.max().item(Float.self))], mean=\(w0.mean().item(Float.self))")
+                log("DEBUG: EXPECTED from Drake.safetensors: shape=(256, 3, 256), range=[-0.44, 0.66], mean=-0.0013")
+
+                // Compare with what was in synthParams before loading
+                if let fileW0 = synthParams["dec.resblock_0.c1_0.conv.weight"] {
+                    MLX.eval(fileW0)
+                    log("DEBUG: synthParams key found! File weight range=[\(fileW0.min().item(Float.self))...\(fileW0.max().item(Float.self))]")
+                } else {
+                    log("DEBUG: WARNING - synthParams[dec.resblock_0.c1_0.conv.weight] NOT FOUND! Weights may not be loading correctly!")
+                    log("DEBUG: Available dec.resblock_0 keys: \(synthParams.keys.filter { $0.contains("resblock_0.c1_0") }.sorted())")
+                }
 
                 // Check Flow weights are loaded
                 let flowCondW = synth.flow.flow_0.enc.cond_layer?.weight
@@ -519,14 +570,35 @@ import MLXNN
             } else {
                 log("RVCInference: No RMVPE URL provided. Using fallback F0.")
             }
-            
+
+            // 4. Load CREPE (Optional)
+            if let crepeURL = crepeURL {
+                do {
+                    log("RVCInference: Loading CREPE from \(crepeURL.lastPathComponent)")
+                    self.crepe = try CREPE(weightsURL: crepeURL, modelType: "full")
+                    log("RVCInference: ✅ CREPE loaded successfully")
+                } catch {
+                    log("RVCInference: Failed to load CREPE: \(error). CREPE will not be available.")
+                    self.crepe = nil
+                }
+            } else {
+                log("RVCInference: No CREPE URL provided. CREPE will not be available.")
+            }
+
             // Also set HuBERT to eval mode
             self.hubertModel?.train(false)
             
             DispatchQueue.main.async { self.status = "Models Loaded" }
         }
         
-        public func infer(audioURL: URL, outputURL: URL, volumeEnvelope: Float = 1.0) async {
+        public func infer(
+            audioURL: URL,
+            outputURL: URL,
+            pitchShift: Int = 0,           // Semitones (-12 to +12)
+            f0Method: String = "rmvpe",    // F0 extraction method
+            indexRate: Float = 0.75,       // Feature retrieval blend
+            volumeEnvelope: Float = 1.0
+        ) async {
             do {
                 DispatchQueue.main.async { self.status = "Loading Audio..." }
                 
@@ -558,7 +630,12 @@ import MLXNN
                 let audioPadded = padReflect(audioToProcess, padding: padSamples)
                 
                 // Run inference on full audio
-                let outputPadded = try await inferChunk(chunk: audioPadded)
+                let outputPadded = try await inferChunk(
+                    chunk: audioPadded,
+                    pitchShift: pitchShift,
+                    f0Method: f0Method,
+                    indexRate: indexRate
+                )
                 MLX.eval(outputPadded)
                 
                 // Calculate crop to remove padding from output
@@ -600,7 +677,12 @@ import MLXNN
             }
         }
         
-        private func inferChunk(chunk: MLXArray) async throws -> MLXArray {
+        private func inferChunk(
+            chunk: MLXArray,
+            pitchShift: Int,
+            f0Method: String,
+            indexRate: Float
+        ) async throws -> MLXArray {
             // chunk: [T] - 16kHz
             
             // DEBUG: Log audio input stats
@@ -630,17 +712,82 @@ import MLXNN
 
 
             // 2. F0 Estimation (16kHz -> 100fps)
+            // Dispatch to appropriate F0 method
             var f0: MLXArray
-            if let rmvpe = rmvpe {
-                f0 = rmvpe.infer(audio: chunk, thred: 0.03) // [1, Frames_rmvpe, 1]
-            } else {
-                // Fallback: constant F0 (200Hz)
-                // RMVPE produces 100fps, Hubert 50fps. So RMVPE has 2x frames.
-                let frames = hubertFeatures.shape[1] * 2
-                f0 = MLX.full([1, frames, 1], values: MLXArray(200.0))
+            switch f0Method.lowercased() {
+            case "crepe", "crepe-full":
+                if let crepe = crepe {
+                    f0 = crepe.getF0(audio: chunk, f0Min: 50.0, f0Max: 1100.0, threshold: 0.1)
+                    log("DEBUG: CREPE F0 shape: \(f0.shape)")
+                } else {
+                    // Fallback to RMVPE if CREPE not loaded
+                    log("WARN: CREPE not loaded, falling back to RMVPE")
+                    if let rmvpe = rmvpe {
+                        f0 = rmvpe.infer(audio: chunk, thred: 0.03)
+                    } else {
+                        let frames = hubertFeatures.shape[1] * 2
+                        f0 = MLX.full([1, frames, 1], values: MLXArray(200.0))
+                    }
+                }
+
+            case "crepe-tiny":
+                // CREPE tiny variant (same interface, just different weights)
+                if let crepe = crepe {
+                    f0 = crepe.getF0(audio: chunk, f0Min: 50.0, f0Max: 1100.0, threshold: 0.1)
+                    log("DEBUG: CREPE-tiny F0 shape: \(f0.shape)")
+                } else {
+                    log("WARN: CREPE-tiny not loaded, falling back to RMVPE")
+                    if let rmvpe = rmvpe {
+                        f0 = rmvpe.infer(audio: chunk, thred: 0.03)
+                    } else {
+                        let frames = hubertFeatures.shape[1] * 2
+                        f0 = MLX.full([1, frames, 1], values: MLXArray(200.0))
+                    }
+                }
+
+            case "rmvpe":
+                if let rmvpe = rmvpe {
+                    f0 = rmvpe.infer(audio: chunk, thred: 0.03)
+                } else {
+                    log("WARN: RMVPE not loaded, using fallback F0")
+                    let frames = hubertFeatures.shape[1] * 2
+                    f0 = MLX.full([1, frames, 1], values: MLXArray(200.0))
+                }
+
+            case "dio":
+                // Initialize DSP extractor if needed
+                if dspPitch == nil {
+                    dspPitch = DSPPitchExtractor(sampleRate: 16000, hopSize: 160)
+                }
+                f0 = dspPitch!.dio(audio: chunk, f0Min: 50.0, f0Max: 1100.0)
+                log("DEBUG: DIO F0 shape: \(f0.shape)")
+
+            case "pm":
+                if dspPitch == nil {
+                    dspPitch = DSPPitchExtractor(sampleRate: 16000, hopSize: 160)
+                }
+                f0 = dspPitch!.pm(audio: chunk, f0Min: 50.0, f0Max: 1100.0)
+                log("DEBUG: PM F0 shape: \(f0.shape)")
+
+            case "harvest":
+                if dspPitch == nil {
+                    dspPitch = DSPPitchExtractor(sampleRate: 16000, hopSize: 160)
+                }
+                f0 = dspPitch!.harvest(audio: chunk, f0Min: 50.0, f0Max: 1100.0)
+                log("DEBUG: HARVEST F0 shape: \(f0.shape)")
+
+            default:
+                // Unknown method - use RMVPE
+                log("WARN: Unknown F0 method '\(f0Method)', using RMVPE")
+                if let rmvpe = rmvpe {
+                    f0 = rmvpe.infer(audio: chunk, thred: 0.03)
+                } else {
+                    let frames = hubertFeatures.shape[1] * 2
+                    f0 = MLX.full([1, frames, 1], values: MLXArray(200.0))
+                }
             }
             MLX.eval(f0)
-            MLX.Memory.clearCache()  // MEMORY FIX: Clear after RMVPE
+            MLX.Memory.clearCache()  // MEMORY FIX: Clear after F0 estimation
             
             // 3. Upsample Hubert Features to match F0 (100fps)
             let N = hubertFeatures.shape[0]
@@ -660,7 +807,15 @@ import MLXNN
             }
 
             // 4. Coarse Pitch calculation (Hz -> Bucket 1-255)
-            let f0Hz = f0.squeezed(axes: [2]) // [1, L_f0]
+            var f0Hz = f0.squeezed(axes: [2]) // [1, L_f0]
+
+            // 4a. Apply pitch shift: f0_shifted = f0 * 2^(semitones/12)
+            if pitchShift != 0 {
+                let multiplier = pow(2.0, Float(pitchShift) / 12.0)
+                f0Hz = f0Hz * multiplier
+                log("DEBUG: Applied pitch shift of \(pitchShift) semitones (multiplier: \(multiplier))")
+            }
+
             let f0_min: Float = 50.0
             let f0_max: Float = 1100.0
             let f0_mel_min = 1127.0 * Darwin.log(1.0 + Double(f0_min) / 700.0)

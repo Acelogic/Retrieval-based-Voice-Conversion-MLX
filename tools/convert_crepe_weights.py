@@ -54,7 +54,7 @@ def convert_crepe_weights(
         value = tensor.numpy()
 
         # Handle different weight types
-        if "conv" in key and "weight" in key:
+        if "conv" in key and "weight" in key and value.ndim == 4:
             # Conv2d weights: PyTorch (Out, In, H, W) -> MLX (Out, H, W, In)
             value = np.transpose(value, (0, 2, 3, 1))
 
@@ -63,10 +63,9 @@ def convert_crepe_weights(
             # MLX BatchNorm uses same names
             pass
 
-        elif "classifier" in key:
+        elif "classifier" in key and "weight" in key and value.ndim == 2:
             # Linear weights: PyTorch (Out, In) -> MLX (In, Out) for Linear
-            if "weight" in key:
-                value = np.transpose(value)
+            value = np.transpose(value)
 
         # Create MLX-compatible key name
         mlx_key = key
@@ -74,14 +73,24 @@ def convert_crepe_weights(
         mlx_weights[mlx_key] = value.astype(np.float32)
         print(f"  {key}: {tensor.shape} -> {value.shape}")
 
-    # Save weights
-    output_file = output_path / f"crepe_{model_type}.npz"
-    np.savez(str(output_file), **mlx_weights)
+    # Save weights in npz format (Python MLX)
+    output_file_npz = output_path / f"crepe_{model_type}.npz"
+    np.savez(str(output_file_npz), **mlx_weights)
+    print(f"\nSaved NPZ weights to: {output_file_npz}")
 
-    print(f"\nSaved weights to: {output_file}")
+    # Save weights in safetensors format (iOS Swift MLX)
+    try:
+        import mlx.core as mx
+        mlx_arrays = {k: mx.array(v) for k, v in mlx_weights.items()}
+        output_file_st = output_path / f"crepe_{model_type}.safetensors"
+        mx.save_safetensors(str(output_file_st), mlx_arrays)
+        print(f"Saved safetensors weights to: {output_file_st}")
+    except ImportError:
+        print("MLX not available, skipping safetensors export")
+
     print(f"Total parameters: {sum(w.size for w in mlx_weights.values()):,}")
 
-    return str(output_file)
+    return str(output_file_npz)
 
 
 def verify_weights(weights_path: str, model_type: str = "full"):

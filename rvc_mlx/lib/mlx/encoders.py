@@ -120,11 +120,9 @@ class TextEncoder(nn.Module):
         # phone: (B, L, D) - phone embeddings from HuBERT
         
         x = self.emb_phone(phone)
-        print(f"DEBUG: TextEncoder emb_phone: min {x.min().item():.6f}, max {x.max().item():.6f}")
 
         if pitch is not None and self.emb_pitch is not None:
             p_emb = self.emb_pitch(pitch)
-            print(f"DEBUG: TextEncoder emb_pitch: min {p_emb.min().item():.6f}, max {p_emb.max().item():.6f}")
             x = x + p_emb
             
         x = x * math.sqrt(self.hidden_channels)

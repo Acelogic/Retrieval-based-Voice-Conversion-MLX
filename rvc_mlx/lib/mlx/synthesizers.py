@@ -1,8 +1,10 @@
 import mlx.core as mx
 import mlx.nn as nn
+from typing import Tuple, Optional
 from rvc_mlx.lib.mlx.generators import HiFiGANNSFGenerator
 from rvc_mlx.lib.mlx.encoders import TextEncoder, PosteriorEncoder
 from rvc_mlx.lib.mlx.residuals import ResidualCouplingBlock
+from rvc_mlx.lib.mlx.commons import rand_slice_segments, slice_segments
 
 class Synthesizer(nn.Module):
     def __init__(
@@ -80,14 +82,114 @@ class Synthesizer(nn.Module):
         
         self.emb_g = nn.Embedding(spk_embed_dim, gin_channels)
         
-    def __call__(self, *args, **kwargs):
-        # Forward pass (training logic) - usually not needed for inference loop in RVC 
-        # unless full pipeline is run.
-        # RVC Inference calls `infer()` directly usually? 
-        # Let's check original. Original has `forward` and `@torch.jit.export infer`.
-        # infer() is what's used.
-        pass
-        
+    def __call__(
+        self,
+        phone: mx.array,
+        phone_lengths: mx.array,
+        pitch: mx.array,
+        pitchf: mx.array,
+        y: mx.array,
+        y_lengths: mx.array,
+        ds: Optional[mx.array] = None,
+    ) -> Tuple[mx.array, mx.array, mx.array, mx.array, Tuple]:
+        """
+        Training forward pass.
+
+        Args:
+            phone: Phone/content features (B, T, 768)
+            phone_lengths: Phone sequence lengths (B,)
+            pitch: Pitch features (B, T)
+            pitchf: Pitch f0 (continuous) (B, T)
+            y: Target spectrogram (B, spec_channels, T_spec)
+            y_lengths: Spectrogram lengths (B,)
+            ds: Speaker ID (B,) - optional, use default if not provided
+
+        Returns:
+            Tuple of:
+                - o: Generated audio (B, T_audio, 1)
+                - ids_slice: Slice indices used
+                - x_mask: Input mask
+                - y_mask: Output mask
+                - (z, z_p, m_p, logs_p, m_q, logs_q): Latent variables for losses
+        """
+        # Speaker embedding
+        if ds is not None:
+            g = self.emb_g(ds)[:, None, :]  # (B, 1, gin_channels)
+        else:
+            g = None
+
+        # Text encoder: encode phone features
+        # m_p, logs_p: prior mean and log variance
+        # Returns (B, C, T) format
+        m_p, logs_p, x_mask = self.enc_p(phone, pitch, phone_lengths)
+
+        # Posterior encoder: encode target spectrogram
+        # y is (B, spec_channels, T_spec), needs to be (B, T_spec, spec_channels) for MLX
+        y_mlx = y.transpose(0, 2, 1)  # (B, T, C)
+        z, m_q, logs_q, y_mask = self.enc_q(y_mlx, y_lengths, g=g)
+        # enc_q returns (B, T, C) format, convert to (B, C, T) for consistency
+        z = z.transpose(0, 2, 1)
+        m_q = m_q.transpose(0, 2, 1)
+        logs_q = logs_q.transpose(0, 2, 1)
+        # y_mask is (B, T), expand to (B, 1, T) for broadcasting
+        y_mask = y_mask[:, None, :]  # (B, 1, T)
+
+        # Flow: transform posterior to prior space
+        # Flow expects (B, T, C) format
+        z_flow = z.transpose(0, 2, 1)  # (B, C, T) -> (B, T, C)
+        # y_mask is (B, 1, T), need (B, T, 1) for flow
+        mask_flow = y_mask.transpose(0, 2, 1)  # (B, 1, T) -> (B, T, 1)
+        z_p = self.flow(z_flow, mask_flow, g=g, reverse=False)
+        z_p = z_p.transpose(0, 2, 1)  # Back to (B, C, T)
+
+        # Random slice for decoder (training uses segments)
+        # self.segment_size is already in frames (not samples)
+        # It's set from the model config, typically 32 for RVC
+        segment_size_frames = self.segment_size
+
+        # Ensure we have enough frames
+        z_lengths = y_lengths
+        # z is in (B, C, T) PyTorch format, so use time_first=False
+        z_slice, ids_slice = rand_slice_segments(
+            z, z_lengths, segment_size_frames, time_first=False
+        )
+
+        # Also slice pitch features - pitchf is (B, T), expand and slice
+        # pitchf[:, None, :] gives (B, 1, T) in PyTorch format
+        pitchf_slice = slice_segments(
+            pitchf[:, None, :] if pitchf.ndim == 2 else pitchf,
+            ids_slice,
+            segment_size_frames,
+            time_first=False  # PyTorch format (B, C, T)
+        )
+        if pitchf_slice.ndim == 3:
+            pitchf_slice = pitchf_slice.squeeze(1)
+
+        # Decoder: generate audio from sliced latents
+        # z_slice is (B, C, segment_frames)
+        o = self.dec(z_slice, pitchf_slice, g=g)
+
+        return o, ids_slice, x_mask, y_mask, (z, z_p, m_p, logs_p, m_q, logs_q)
+
+    def forward_generator_loss(
+        self,
+        phone: mx.array,
+        phone_lengths: mx.array,
+        pitch: mx.array,
+        pitchf: mx.array,
+        y: mx.array,
+        y_lengths: mx.array,
+        ds: Optional[mx.array] = None,
+    ):
+        """
+        Forward pass returning values needed for generator loss computation.
+        Same as __call__ but with clearer naming for training loops.
+        """
+        return self(phone, phone_lengths, pitch, pitchf, y, y_lengths, ds)
+
+    # Alias for training compatibility
+    forward = forward_generator_loss
+
     def infer(self, phone, phone_lengths, pitch, nsff0, sid, rate=None):
         # phone: (B, L, Dim)
         # pitch: (B, L)
